@@ -38,13 +38,16 @@ def add_transaction(type, amount, category, description, date):
 def get_transactions():
 
     connection = sqlite3.connect("financial.db")
+    connection.row_factory = sqlite3.Row
     cursor = connection.cursor()
 
     cursor.execute('''
         SELECT * FROM transactions
     ''')
 
-    result = cursor.fetchall()
+    rows = cursor.fetchall()
+
+    result = [dict(row) for row in rows]
 
     connection.close()
     return result
