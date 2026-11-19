@@ -51,3 +51,27 @@ def get_transactions():
 
     connection.close()
     return result
+
+
+def get_balance():
+
+    transactions = get_transactions()
+
+    expense = 0 # Расход
+    income = 0 # Доход
+
+    for transaction in transactions:
+
+        if transaction["type"] == "income":
+            income += transaction["amount"]
+
+        elif transaction["type"] == "expense":
+            expense += transaction["amount"]
+
+    balance = income - expense
+    return {
+        "income": income,
+        "expense": expense,
+        "balance": balance
+    }
+
