@@ -1,4 +1,6 @@
 .env
 .venv
 *.db
+.pytest_tmp/
+.pytest_cache/
 __pycache__/
