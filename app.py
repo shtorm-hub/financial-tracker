@@ -1,4 +1,4 @@
-from database import create_database, add_transaction, get_transactions
+from database import create_database, add_transaction, get_transactions, get_balance
 from flask import Flask, request
 from datetime import datetime
 
@@ -54,6 +54,12 @@ def create_transactions():
         )
 
     return {"message": "Transaction created"}, 201
+
+
+@app.route("/api/balance", methods=["GET"])
+def balance():
+    transaction_balance = get_balance()
+    return transaction_balance
 
 
 if __name__ == "__main__":
