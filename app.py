@@ -1,67 +1,89 @@
-from database import create_database, add_transaction, get_transactions, get_balance
-from flask import Flask, request
+import sqlite3
 from datetime import datetime
 
-app = Flask(__name__)
+from flask import Flask, current_app, request
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
 
-@app.route("/")
-def home():
-    return {"message": "Financial Tracker API is running"}
+from database import add_transaction, create_database, database_path, get_balance, get_transactions
 
-
-@app.route("/api/transactions", methods=["GET"])
-def transactions():
-    db_transactions = get_transactions()
-    return db_transactions
+MAX_AMOUNT = 2**63 - 1
+MAX_CATEGORY_LENGTH = 100
+MAX_DESCRIPTION_LENGTH = 1000
 
 
-@app.route("/api/transactions", methods=["POST"])
-def create_transactions():
-    data = request.get_json()
+def create_app(database=None):
+    app = Flask(__name__)
+    app.config['DATABASE'] = database_path(database)
+    app.config['MAX_CONTENT_LENGTH'] = 16 * 1024
+    create_database(app.config['DATABASE'])
 
-    if not isinstance(data, dict):
-        return {"error": "JSON object required"}, 400
+    @app.errorhandler(BadRequest)
+    def bad_request(error):
+        return {'error': 'Invalid JSON'}, 400
 
-    transaction_type = data.get("type")
-    if transaction_type not in ("expense", "income"):
-        return {"error": "Invalid transaction type"}, 400
+    @app.errorhandler(UnsupportedMediaType)
+    def unsupported_media_type(error):
+        return {'error': 'Content-Type must be application/json'}, 415
 
-    amount = data.get("amount")
-    if type(amount) is not int or amount <= 0:
-        return {"error": "Invalid amount"}, 400
-    
-    category = data.get("category")
-    if not isinstance(category, (str, type(None))):
-        return {"error": "Invalid category"}, 400
+    @app.errorhandler(RequestEntityTooLarge)
+    def request_too_large(error):
+        return {'error': 'Request body too large'}, 413
 
-    description = data.get("description")
-    if not isinstance(description, (str, type(None))):
-        return {"error": "Invalid description"}, 400
-    
-    date = data.get("date")
-    if not isinstance(date, str):
-        return {"error": "Invalid date"}, 400
+    @app.errorhandler(sqlite3.Error)
+    def database_error(error):
+        current_app.logger.exception('Database operation failed')
+        return {'error': 'Database error'}, 500
 
-    try:
-        formatted_date = datetime.strptime(date, "%Y-%m-%d")
-    except ValueError:
-        return {"error": "Invalid date"}, 400
+    @app.route('/')
+    def home():
+        return {'message': 'Financial Tracker API is running'}
 
-    date = formatted_date.strftime("%Y-%m-%d")
+    @app.route('/api/transactions', methods=['GET'])
+    def transactions():
+        return get_transactions(current_app.config['DATABASE'])
 
-    add_transaction(
-        transaction_type, amount, category, description, date
-        )
+    @app.route('/api/transactions', methods=['POST'])
+    def create_transactions():
+        data = request.get_json()
+        if not isinstance(data, dict):
+            return {'error': 'JSON object required'}, 400
 
-    return {"message": "Transaction created"}, 201
+        transaction_type = data.get('type')
+        if transaction_type not in ('expense', 'income'):
+            return {'error': 'Invalid transaction type'}, 400
+
+        amount = data.get('amount')
+        if type(amount) is not int or not 0 < amount <= MAX_AMOUNT:
+            return {'error': 'Invalid amount'}, 400
+
+        category = data.get('category')
+        if category is not None and (not isinstance(category, str) or len(category) > MAX_CATEGORY_LENGTH):
+            return {'error': 'Invalid category'}, 400
+
+        description = data.get('description')
+        if description is not None and (not isinstance(description, str) or len(description) > MAX_DESCRIPTION_LENGTH):
+            return {'error': 'Invalid description'}, 400
+
+        date = data.get('date')
+        if not isinstance(date, str):
+            return {'error': 'Invalid date'}, 400
+        try:
+            date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
+        except ValueError:
+            return {'error': 'Invalid date'}, 400
+
+        add_transaction(transaction_type, amount, category, description, date,
+                        current_app.config['DATABASE'])
+        return {'message': 'Transaction created'}, 201
+
+    @app.route('/api/balance', methods=['GET'])
+    def balance():
+        return get_balance(current_app.config['DATABASE'])
+
+    return app
 
 
-@app.route("/api/balance", methods=["GET"])
-def balance():
-    transaction_balance = get_balance()
-    return transaction_balance
+app = create_app()
 
-
-if __name__ == "__main__":
-    create_database()
-    app.run(debug=True)
+if __name__ == '__main__':
+    app.run(debug=False)

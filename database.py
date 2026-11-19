@@ -1,77 +1,47 @@
+import os
 import sqlite3
+from contextlib import closing
+from pathlib import Path
+
+DEFAULT_DATABASE = Path(__file__).resolve().parent / "financial.db"
 
 
-def create_database():
-
-    connection = sqlite3.connect("financial.db")
-    cursor = connection.cursor()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            type TEXT NOT NULL CHECK (type IN ("income", "expense")),
-            amount INTEGER NOT NULL CHECK (amount > 0),
-            category TEXT,
-            description TEXT,
-            date TEXT NOT NULL
-        )
-    ''')
-
-    connection.commit()
-    connection.close()
+def database_path(path=None):
+    return str(Path(path or os.environ.get("FINANCIAL_DATABASE", DEFAULT_DATABASE)).expanduser().resolve())
 
 
-def add_transaction(type, amount, category, description, date):
-    
-    connection = sqlite3.connect("financial.db")
-    cursor = connection.cursor()
-
-    cursor.execute('''
-        INSERT INTO transactions (type, amount, category, description, date)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (type, amount, category, description, date))
-
-    connection.commit()
-    connection.close()
-
-
-def get_transactions():
-
-    connection = sqlite3.connect("financial.db")
-    connection.row_factory = sqlite3.Row
-    cursor = connection.cursor()
-
-    cursor.execute('''
-        SELECT * FROM transactions
-    ''')
-
-    rows = cursor.fetchall()
-
-    result = [dict(row) for row in rows]
-
-    connection.close()
-    return result
+def create_database(path=None):
+    with closing(sqlite3.connect(database_path(path))) as connection:
+        with connection:
+            connection.execute('''
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+                    amount INTEGER NOT NULL CHECK (amount > 0),
+                    category TEXT,
+                    description TEXT,
+                    date TEXT NOT NULL
+                )
+            ''')
 
 
-def get_balance():
+def add_transaction(type, amount, category, description, date, path=None):
+    with closing(sqlite3.connect(database_path(path))) as connection:
+        with connection:
+            connection.execute('''
+                INSERT INTO transactions (type, amount, category, description, date)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (type, amount, category, description, date))
 
-    transactions = get_transactions()
 
-    expense = 0 # Расход
-    income = 0 # Доход
+def get_transactions(path=None):
+    with closing(sqlite3.connect(database_path(path))) as connection:
+        connection.row_factory = sqlite3.Row
+        return [dict(row) for row in connection.execute('SELECT * FROM transactions')]
 
-    for transaction in transactions:
 
-        if transaction["type"] == "income":
-            income += transaction["amount"]
-
-        elif transaction["type"] == "expense":
-            expense += transaction["amount"]
-
-    balance = income - expense
-    return {
-        "income": income,
-        "expense": expense,
-        "balance": balance
-    }
-
+def get_balance(path=None):
+    transactions = get_transactions(path)
+    income = sum(t['amount'] for t in transactions if t['type'] == 'income')
+    expense = sum(t['amount'] for t in transactions if t['type'] == 'expense')
+    return {'income': income, 'expense': expense, 'balance': income - expense}
