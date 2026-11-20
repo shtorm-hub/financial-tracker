@@ -1,17 +1,22 @@
 import hmac
+import hashlib
+import ipaddress
 import os
 import re
 import secrets
 import sqlite3
+import time
 from datetime import datetime, timedelta
 
 from flask import Flask, current_app, g, request, session
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 from database import (add_transaction, check_database, create_user, database_path,
                       delete_transaction, find_user, get_balance, get_transactions,
-                      get_user, update_transaction)
+                      get_session_user, update_transaction, create_session,
+                      reserve_login_attempt, revoke_session)
 
 MAX_AMOUNT = 2**63 - 1
 MAX_CATEGORY_LENGTH = 100
@@ -64,12 +69,29 @@ def create_app(database=None, config=None):
     app.config.update(DATABASE=database_path(database), SECRET_KEY=os.environ.get('FINANCIAL_SECRET_KEY'),
                       MAX_CONTENT_LENGTH=16 * 1024, SESSION_COOKIE_HTTPONLY=True,
                       SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE='Lax',
-                      PERMANENT_SESSION_LIFETIME=timedelta(hours=12))
+                      PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+                      TRUSTED_PROXY_HOPS=int(os.environ.get('FINANCIAL_TRUSTED_PROXY_HOPS', '0')),
+                      LOGIN_WINDOW=60, LOGIN_IP_LIMIT=30, LOGIN_USER_LIMIT=5)
     if config:
         app.config.update(config)
-    if not isinstance(app.config['SECRET_KEY'], str) or len(app.config['SECRET_KEY']) < 32:
+    key = app.config['SECRET_KEY']
+    if not isinstance(key, str) or len(key) < 32 or len(set(key)) < 8:
         raise RuntimeError('Set FINANCIAL_SECRET_KEY to a random secret of at least 32 characters')
+    hops = app.config['TRUSTED_PROXY_HOPS']
+    if type(hops) is not int or not 0 <= hops <= 10:
+        raise RuntimeError('TRUSTED_PROXY_HOPS must be an integer between 0 and 10')
+    for setting in ('LOGIN_WINDOW', 'LOGIN_IP_LIMIT', 'LOGIN_USER_LIMIT'):
+        if type(app.config[setting]) is not int or app.config[setting] < 1:
+            raise RuntimeError(f'{setting} must be a positive integer')
+    if hops:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=hops)
     check_database(app.config['DATABASE'])
+
+    def keyed_hash(value):
+        return hmac.new(app.config['SECRET_KEY'].encode('utf-8'), value.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    def token_hash(value):
+        return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
     @app.errorhandler(BadRequest)
     def bad_request(error):
@@ -86,14 +108,14 @@ def create_app(database=None, config=None):
     @app.errorhandler(sqlite3.Error)
     def database_error(error):
         current_app.logger.exception('Database operation failed')
-        return {'error': 'Database error'}, 500
+        return {'error': 'Database error'}, 503
 
     @app.before_request
     def protect_requests():
         g.user = None
-        user_id = session.get('user_id')
-        if type(user_id) is int and 0 < user_id <= MAX_AMOUNT:
-            g.user = get_user(user_id, current_app.config['DATABASE'])
+        sid = session.get('session_id')
+        if isinstance(sid, str) and len(sid) <= 128:
+            g.user = get_session_user(current_app.config['DATABASE'], token_hash(sid), int(time.time()))
         if request.path.startswith('/api/transactions') or request.path == '/api/balance' or request.path == '/api/auth/me':
             if g.user is None:
                 return {'error': 'Authentication required'}, 401
@@ -137,17 +159,37 @@ def create_app(database=None, config=None):
         if values is None:
             return {'error': 'Invalid username or password'}, 400
         username, password = values
+        try:
+            client_ip = str(ipaddress.ip_address(request.remote_addr or ''))
+        except ValueError:
+            return {'error': 'Client address unavailable'}, 503
+        retry = reserve_login_attempt(current_app.config['DATABASE'], keyed_hash('ip:' + client_ip),
+                                      keyed_hash('user:' + username), int(time.time()),
+                                      app.config['LOGIN_WINDOW'], app.config['LOGIN_IP_LIMIT'],
+                                      app.config['LOGIN_USER_LIMIT'])
+        if retry:
+            return {'error': 'Too many login attempts'}, 429, {'Retry-After': str(retry)}
         user = find_user(username, current_app.config['DATABASE'])
         valid = check_password_hash(user['password_hash'] if user else DUMMY_HASH, password)
         if not user or not valid:
             return {'error': 'Invalid username or password'}, 401
+        old_sid = session.get('session_id')
+        if isinstance(old_sid, str) and len(old_sid) <= 128:
+            revoke_session(current_app.config['DATABASE'], token_hash(old_sid))
+        sid = secrets.token_urlsafe(32)
+        now = int(time.time())
+        create_session(current_app.config['DATABASE'], token_hash(sid), user['id'],
+                       now + int(app.permanent_session_lifetime.total_seconds()), now)
         session.clear()
-        session['user_id'] = user['id']
+        session['session_id'] = sid
         session.permanent = True
         return {'message': 'Logged in'}
 
     @app.post('/api/auth/logout')
     def logout():
+        sid = session.get('session_id')
+        if isinstance(sid, str) and len(sid) <= 128:
+            revoke_session(current_app.config['DATABASE'], token_hash(sid))
         session.clear()
         return {'message': 'Logged out'}
 

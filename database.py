@@ -4,16 +4,20 @@ from contextlib import closing
 from pathlib import Path
 
 DEFAULT_DATABASE = Path(__file__).resolve().parent / 'financial.db'
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def database_path(path=None):
     return str(Path(path or os.environ.get('FINANCIAL_DATABASE', DEFAULT_DATABASE)).expanduser().resolve())
 
 
-def connect(path, readonly=False):
+def connect(path, readonly=False, create=False):
     target = Path(database_path(path))
-    connection = sqlite3.connect(target.as_uri() + '?mode=ro', uri=True) if readonly else sqlite3.connect(target)
+    if create:
+        connection = sqlite3.connect(target)
+    else:
+        mode = 'ro' if readonly else 'rw'
+        connection = sqlite3.connect(target.as_uri() + '?mode=' + mode, uri=True)
     connection.execute('PRAGMA foreign_keys = ON')
     return connection
 
@@ -28,11 +32,11 @@ def check_database(path):
 
 def migrate_database(path):
     """Explicit migration only; caller is responsible for a verified backup."""
-    with closing(connect(path)) as connection:
+    with closing(connect(path, create=True)) as connection:
         try:
             connection.execute('BEGIN IMMEDIATE')
             version = connection.execute('PRAGMA user_version').fetchone()[0]
-            if version == SCHEMA_VERSION:
+            if version == 1:
                 connection.commit()
                 return
             if version != 0:
@@ -61,11 +65,94 @@ def migrate_database(path):
             connection.execute('CREATE INDEX idx_transactions_user_id ON transactions(user_id)')
             if connection.execute('PRAGMA foreign_key_check').fetchone():
                 raise RuntimeError('Foreign key check failed')
-            connection.execute(f'PRAGMA user_version = {SCHEMA_VERSION}')
+            connection.execute('PRAGMA user_version = 1')
             connection.commit()
         except Exception:
             connection.rollback()
             raise
+
+
+def migrate_security_v2(path):
+    """Explicitly upgrade schema v1; caller must back up first."""
+    with closing(connect(path)) as connection:
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+            version = connection.execute('PRAGMA user_version').fetchone()[0]
+            if version == 2:
+                connection.commit()
+                return
+            if version != 1:
+                raise RuntimeError('Security migration requires schema version 1')
+            connection.execute('''CREATE TABLE auth_sessions (
+                token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),
+                expires_at INTEGER NOT NULL
+            )''')
+            connection.execute('CREATE INDEX idx_auth_sessions_user ON auth_sessions(user_id)')
+            connection.execute('CREATE INDEX idx_auth_sessions_expiry ON auth_sessions(expires_at)')
+            connection.execute('''CREATE TABLE login_attempts (
+                id INTEGER PRIMARY KEY, ip_hash TEXT NOT NULL,
+                username_hash TEXT NOT NULL, attempted_at INTEGER NOT NULL
+            )''')
+            connection.execute('CREATE INDEX idx_attempt_ip_time ON login_attempts(ip_hash, attempted_at)')
+            connection.execute('CREATE INDEX idx_attempt_user_time ON login_attempts(username_hash, attempted_at)')
+            connection.execute('CREATE INDEX idx_attempt_time ON login_attempts(attempted_at)')
+            if connection.execute('PRAGMA foreign_key_check').fetchone():
+                raise RuntimeError('Foreign key check failed')
+            connection.execute('PRAGMA user_version = 2')
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def reserve_login_attempt(path, ip_hash, username_hash, now, window, ip_limit, user_limit):
+    """Atomically reserve an attempt for both keys; return retry seconds or zero."""
+    with closing(connect(path)) as connection:
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+            cutoff = now - window
+            connection.execute('DELETE FROM login_attempts WHERE attempted_at <= ?', (cutoff,))
+            retry = 0
+            for column, key, limit in (('ip_hash', ip_hash, ip_limit), ('username_hash', username_hash, user_limit)):
+                count, oldest = connection.execute(
+                    f'SELECT COUNT(*), MIN(attempted_at) FROM login_attempts WHERE {column} = ?', (key,)
+                ).fetchone()
+                if count >= limit:
+                    retry = max(retry, oldest + window - now)
+            if not retry:
+                connection.execute('INSERT INTO login_attempts (ip_hash, username_hash, attempted_at) VALUES (?, ?, ?)',
+                                   (ip_hash, username_hash, now))
+            connection.commit()
+            return retry
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def create_session(path, token_hash, user_id, expires_at, now):
+    with closing(connect(path)) as connection, connection:
+        connection.execute('DELETE FROM auth_sessions WHERE expires_at <= ?', (now,))
+        connection.execute('INSERT INTO auth_sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)',
+                           (token_hash, user_id, expires_at))
+
+
+def get_session_user(path, token_hash, now):
+    with closing(connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return connection.execute('''SELECT users.id, users.username FROM auth_sessions
+            JOIN users ON users.id = auth_sessions.user_id
+            WHERE token_hash = ? AND expires_at > ?''', (token_hash, now)).fetchone()
+
+
+def revoke_session(path, token_hash):
+    with closing(connect(path)) as connection, connection:
+        connection.execute('DELETE FROM auth_sessions WHERE token_hash = ?', (token_hash,))
+
+
+def revoke_user_sessions(path, user_id):
+    """Use in the same security workflow as a password reset or compromise."""
+    with closing(connect(path)) as connection, connection:
+        connection.execute('DELETE FROM auth_sessions WHERE user_id = ?', (user_id,))
 
 
 def create_user(username, password_hash, path):
