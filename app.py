@@ -4,11 +4,37 @@ from datetime import datetime
 from flask import Flask, current_app, request
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
 
-from database import add_transaction, create_database, database_path, get_balance, get_transactions
+from database import (add_transaction, create_database, database_path, delete_transaction,
+                      get_balance, get_transactions, update_transaction)
 
 MAX_AMOUNT = 2**63 - 1
 MAX_CATEGORY_LENGTH = 100
 MAX_DESCRIPTION_LENGTH = 1000
+
+
+def validate_transaction(data):
+    if not isinstance(data, dict):
+        return None, 'JSON object required'
+    transaction_type = data.get('type')
+    if transaction_type not in ('expense', 'income'):
+        return None, 'Invalid transaction type'
+    amount = data.get('amount')
+    if type(amount) is not int or not 0 < amount <= MAX_AMOUNT:
+        return None, 'Invalid amount'
+    category = data.get('category')
+    if category is not None and (not isinstance(category, str) or len(category) > MAX_CATEGORY_LENGTH):
+        return None, 'Invalid category'
+    description = data.get('description')
+    if description is not None and (not isinstance(description, str) or len(description) > MAX_DESCRIPTION_LENGTH):
+        return None, 'Invalid description'
+    date = data.get('date')
+    if not isinstance(date, str):
+        return None, 'Invalid date'
+    try:
+        date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
+    except ValueError:
+        return None, 'Invalid date'
+    return (transaction_type, amount, category, description, date), None
 
 
 def create_app(database=None):
@@ -44,37 +70,28 @@ def create_app(database=None):
 
     @app.route('/api/transactions', methods=['POST'])
     def create_transactions():
-        data = request.get_json()
-        if not isinstance(data, dict):
-            return {'error': 'JSON object required'}, 400
-
-        transaction_type = data.get('type')
-        if transaction_type not in ('expense', 'income'):
-            return {'error': 'Invalid transaction type'}, 400
-
-        amount = data.get('amount')
-        if type(amount) is not int or not 0 < amount <= MAX_AMOUNT:
-            return {'error': 'Invalid amount'}, 400
-
-        category = data.get('category')
-        if category is not None and (not isinstance(category, str) or len(category) > MAX_CATEGORY_LENGTH):
-            return {'error': 'Invalid category'}, 400
-
-        description = data.get('description')
-        if description is not None and (not isinstance(description, str) or len(description) > MAX_DESCRIPTION_LENGTH):
-            return {'error': 'Invalid description'}, 400
-
-        date = data.get('date')
-        if not isinstance(date, str):
-            return {'error': 'Invalid date'}, 400
-        try:
-            date = datetime.strptime(date, '%Y-%m-%d').strftime('%Y-%m-%d')
-        except ValueError:
-            return {'error': 'Invalid date'}, 400
-
-        add_transaction(transaction_type, amount, category, description, date,
-                        current_app.config['DATABASE'])
+        values, error = validate_transaction(request.get_json())
+        if error:
+            return {'error': error}, 400
+        add_transaction(*values, path=current_app.config['DATABASE'])
         return {'message': 'Transaction created'}, 201
+
+    @app.route('/api/transactions/<int:transaction_id>', methods=['PUT'])
+    def replace_transaction(transaction_id):
+        values, error = validate_transaction(request.get_json())
+        if error:
+            return {'error': error}, 400
+        if transaction_id > MAX_AMOUNT or not update_transaction(
+                transaction_id, *values, path=current_app.config['DATABASE']):
+            return {'error': 'Transaction not found'}, 404
+        return {'message': 'Transaction updated'}, 200
+
+    @app.route('/api/transactions/<int:transaction_id>', methods=['DELETE'])
+    def remove_transaction(transaction_id):
+        if transaction_id > MAX_AMOUNT or not delete_transaction(
+                transaction_id, path=current_app.config['DATABASE']):
+            return {'error': 'Transaction not found'}, 404
+        return '', 204
 
     @app.route('/api/balance', methods=['GET'])
     def balance():
