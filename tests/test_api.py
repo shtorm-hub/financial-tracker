@@ -7,9 +7,10 @@ import pytest
 
 @pytest.fixture
 def raw_client(tmp_path, monkeypatch):
-    from database import migrate_database
+    from database import migrate_database, migrate_security_v2
     db = tmp_path / 'test.db'
     migrate_database(db)
+    migrate_security_v2(db)
     monkeypatch.setenv('FINANCIAL_DATABASE', str(db))
     monkeypatch.setenv('FINANCIAL_SECRET_KEY', 'test-only-secret-key-32-characters-long')
     sys.modules.pop('app', None)
@@ -92,16 +93,17 @@ def test_json_errors_and_body_limit(client):
 
 
 def test_migration_preserves_existing_data(tmp_path):
-    from database import migrate_database
+    from database import migrate_database, migrate_security_v2
     db = tmp_path / 'existing.db'
     with sqlite3.connect(db) as connection:
         connection.execute("CREATE TABLE transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, amount INTEGER NOT NULL, category TEXT, description TEXT, date TEXT NOT NULL)")
         connection.execute("INSERT INTO transactions (type, amount, date) VALUES ('income', 42, '2026-11-19')")
     migrate_database(db)
-    migrate_database(db)
+    migrate_security_v2(db)
+    migrate_security_v2(db)
     with sqlite3.connect(db) as connection:
         assert connection.execute('SELECT id, amount, user_id FROM transactions').fetchall() == [(1, 42, None)]
-        assert connection.execute('PRAGMA user_version').fetchone()[0] == 1
+        assert connection.execute('PRAGMA user_version').fetchone()[0] == 2
 
 
 def test_update_and_delete_transactions(client):
@@ -224,12 +226,13 @@ def test_registration_login_and_password_hash(raw_client):
 
 
 def test_legacy_rows_hidden_and_migration_rollback(tmp_path, monkeypatch):
-    from database import migrate_database
+    from database import migrate_database, migrate_security_v2
     db = tmp_path / 'legacy.db'
     with sqlite3.connect(db) as c:
         c.execute('CREATE TABLE transactions (id INTEGER PRIMARY KEY, type TEXT, amount INTEGER, category TEXT, description TEXT, date TEXT)')
         c.execute("INSERT INTO transactions VALUES (7, 'income', 99, NULL, NULL, '2026-11-20')")
     migrate_database(db)
+    migrate_security_v2(db)
     monkeypatch.setenv('FINANCIAL_DATABASE', str(db))
     monkeypatch.setenv('FINANCIAL_SECRET_KEY', 'test-only-secret-key-32-characters-long')
     sys.modules.pop('app', None)
@@ -255,10 +258,11 @@ def test_legacy_rows_hidden_and_migration_rollback(tmp_path, monkeypatch):
 
 
 def test_legacy_assignment_requires_matching_user_and_count(tmp_path):
-    from database import migrate_database
+    from database import migrate_database, migrate_security_v2
     from claim_legacy import claim_unassigned
     db = tmp_path / 'legacy.db'
     migrate_database(db)
+    migrate_security_v2(db)
     with sqlite3.connect(db) as c:
         c.execute("INSERT INTO users (username, password_hash) VALUES ('alice', 'hash')")
         c.execute("INSERT INTO transactions (type, amount, date) VALUES ('income', 42, '2026-11-19')")
@@ -282,9 +286,149 @@ def test_startup_requires_secret_and_migrated_database(tmp_path, monkeypatch, ra
     with pytest.raises(RuntimeError, match='SECRET_KEY'):
         module.create_app(str(db), {'SECRET_KEY': None})
     with pytest.raises(RuntimeError, match='migration'):
-        module.create_app(str(db), {'SECRET_KEY': 'x' * 32})
+        module.create_app(str(db), {'SECRET_KEY': 'test-only-secret-key-32-characters-long'})
     assert db.read_bytes() == before
     app = raw_client.application
     assert app.config['SESSION_COOKIE_HTTPONLY']
     assert app.config['SESSION_COOKIE_SAMESITE'] == 'Lax'
-    assert module.create_app(app.config['DATABASE'], {'SECRET_KEY': 'x' * 32}).config['SESSION_COOKIE_SECURE']
+    assert module.create_app(app.config['DATABASE'], {'SECRET_KEY': 'test-only-secret-key-32-characters-long'}).config['SESSION_COOKIE_SECURE']
+
+
+def test_revoked_cookie_and_password_event(raw_client):
+    from database import revoke_user_sessions
+    c = AuthenticatedClient(raw_client)
+    creds = {'username': 'alice', 'password': 'alice-password-123'}
+    c.post('/api/auth/register', json=creds)
+    c.post('/api/auth/login', json=creds)
+    token = raw_client.get('/api/auth/csrf').get_json()['csrf_token']
+    cookie_name = raw_client.application.config['SESSION_COOKIE_NAME']
+    copied = raw_client.get_cookie(cookie_name).value
+    stolen = raw_client.application.test_client()
+    stolen.set_cookie(cookie_name, copied)
+    other = AuthenticatedClient(raw_client.application.test_client())
+    assert other.post('/api/auth/login', json=creds).status_code == 200
+    assert stolen.get('/api/auth/me').status_code == 200
+    assert c.post('/api/auth/logout').status_code == 200
+    assert other.get('/api/auth/me').status_code == 200
+    assert stolen.get('/api/auth/me').status_code == 401
+    assert stolen.post('/api/transactions', json={'type': 'income', 'amount': 1, 'date': '2026-11-20'},
+                       headers={'X-CSRF-Token': token}).status_code == 401
+    c.post('/api/auth/login', json=creds)
+    user_id = c.get('/api/auth/me').get_json()['id']
+    revoke_user_sessions(raw_client.application.config['DATABASE'], user_id)
+    assert c.get('/api/auth/me').status_code == 401
+    assert other.get('/api/auth/me').status_code == 401
+
+
+def test_login_rate_limit_is_atomic_and_temporary(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from database import migrate_database, migrate_security_v2, reserve_login_attempt
+    db = tmp_path / 'rate.db'
+    migrate_database(db)
+    migrate_security_v2(db)
+    def attempt(i):
+        return reserve_login_attempt(db, 'ip' + str(i), 'target', 1000, 60, 30, 5)
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(attempt, range(20)))
+    assert results.count(0) == 5
+    assert results.count(60) == 15
+    assert reserve_login_attempt(db, 'fresh-ip', 'target', 1060, 60, 30, 5) == 0
+
+
+def test_login_rate_limit_and_untrusted_forwarded_for(raw_client):
+    app = raw_client.application
+    app.config.update(LOGIN_IP_LIMIT=2, LOGIN_USER_LIMIT=50)
+    c = AuthenticatedClient(raw_client)
+    for number in range(2):
+        response = c.post('/api/auth/login', json={'username': 'user' + str(number), 'password': 'bad'},
+                          headers={'X-Forwarded-For': '203.0.113.' + str(number + 1)})
+        assert response.status_code == 401
+    response = c.post('/api/auth/login', json={'username': 'user3', 'password': 'bad'},
+                      headers={'X-Forwarded-For': '203.0.113.3'})
+    assert response.status_code == 429
+    assert 1 <= int(response.headers['Retry-After']) <= 60
+
+
+def test_login_and_session_storage_fail_closed(raw_client, monkeypatch):
+    module = sys.modules['app']
+    c = AuthenticatedClient(raw_client)
+    creds = {'username': 'alice', 'password': 'alice-password-123'}
+    c.post('/api/auth/register', json=creds)
+    def unavailable(*args, **kwargs):
+        raise sqlite3.OperationalError('unavailable')
+    with monkeypatch.context() as m:
+        m.setattr(module, 'reserve_login_attempt', unavailable)
+        assert c.post('/api/auth/login', json=creds).status_code == 503
+    assert c.post('/api/auth/login', json=creds).status_code == 200
+    csrf = raw_client.get('/api/auth/csrf').get_json()['csrf_token']
+    with monkeypatch.context() as m:
+        m.setattr(module, 'get_session_user', unavailable)
+        assert raw_client.get('/api/transactions').status_code == 503
+        assert raw_client.post('/api/transactions', json={}, headers={'X-CSRF-Token': csrf}).status_code == 503
+        assert raw_client.post('/api/auth/logout', headers={'X-CSRF-Token': csrf}).status_code == 503
+
+
+def test_security_configuration_and_migration_v2(tmp_path, raw_client):
+    from database import migrate_database, migrate_security_v2
+    module = sys.modules['app']
+    app = raw_client.application
+    for key in ('x' * 32, 'too-short', None):
+        with pytest.raises(RuntimeError, match='SECRET_KEY'):
+            module.create_app(app.config['DATABASE'], {'SECRET_KEY': key})
+    with pytest.raises(RuntimeError, match='TRUSTED_PROXY_HOPS'):
+        module.create_app(app.config['DATABASE'], {'SECRET_KEY': 'test-only-secret-key-32-characters-long',
+                                                   'TRUSTED_PROXY_HOPS': -1})
+    db = tmp_path / 'old.db'
+    migrate_database(db)
+    with sqlite3.connect(db) as con:
+        con.execute("INSERT INTO transactions (type, amount, date) VALUES ('income', 99, '2026-11-20')")
+    migrate_security_v2(db)
+    migrate_security_v2(db)
+    with sqlite3.connect(db) as con:
+        assert con.execute('PRAGMA user_version').fetchone()[0] == 2
+        assert con.execute('SELECT amount, user_id FROM transactions').fetchall() == [(99, None)]
+        assert con.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+
+
+def test_explicit_trusted_proxy_changes_limit_key(raw_client):
+    module = sys.modules['app']
+    app = module.create_app(raw_client.application.config['DATABASE'], {
+        'SECRET_KEY': 'test-only-secret-key-32-characters-long', 'TESTING': True,
+        'SESSION_COOKIE_SECURE': False, 'TRUSTED_PROXY_HOPS': 1,
+        'LOGIN_IP_LIMIT': 1, 'LOGIN_USER_LIMIT': 50,
+    })
+    c = AuthenticatedClient(app.test_client())
+    def login(ip, name):
+        return c.post('/api/auth/login', json={'username': name, 'password': 'wrong'},
+                      headers={'X-Forwarded-For': ip})
+    assert login('203.0.113.1', 'user1').status_code == 401
+    assert login('203.0.113.2', 'user2').status_code == 401
+    assert login('203.0.113.1', 'user3').status_code == 429
+
+
+def test_server_session_expiry(raw_client):
+    client = AuthenticatedClient(raw_client)
+    creds = {'username': 'alice', 'password': 'alice-password-123'}
+    client.post('/api/auth/register', json=creds)
+    client.post('/api/auth/login', json=creds)
+    assert client.get('/api/auth/me').status_code == 200
+    with sqlite3.connect(raw_client.application.config['DATABASE']) as con:
+        con.execute('UPDATE auth_sessions SET expires_at = 0')
+    assert client.get('/api/auth/me').status_code == 401
+
+
+def test_security_migration_rolls_back_and_requires_existing_file(tmp_path):
+    from database import migrate_database, migrate_security_v2
+    db = tmp_path / 'rollback.db'
+    migrate_database(db)
+    with sqlite3.connect(db) as con:
+        con.execute('CREATE TABLE login_attempts (unexpected TEXT)')
+    with pytest.raises(sqlite3.OperationalError):
+        migrate_security_v2(db)
+    with sqlite3.connect(db) as con:
+        assert con.execute('PRAGMA user_version').fetchone()[0] == 1
+        assert con.execute("SELECT name FROM sqlite_master WHERE name='auth_sessions'").fetchone() is None
+    missing = tmp_path / 'missing.db'
+    with pytest.raises(sqlite3.OperationalError):
+        migrate_security_v2(missing)
+    assert not missing.exists()
