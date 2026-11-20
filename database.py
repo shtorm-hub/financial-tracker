@@ -34,6 +34,24 @@ def add_transaction(type, amount, category, description, date, path=None):
             ''', (type, amount, category, description, date))
 
 
+def update_transaction(transaction_id, type, amount, category, description, date, path=None):
+    with closing(sqlite3.connect(database_path(path))) as connection:
+        with connection:
+            cursor = connection.execute('''
+                UPDATE transactions
+                SET type = ?, amount = ?, category = ?, description = ?, date = ?
+                WHERE id = ?
+            ''', (type, amount, category, description, date, transaction_id))
+            return cursor.rowcount > 0
+
+
+def delete_transaction(transaction_id, path=None):
+    with closing(sqlite3.connect(database_path(path))) as connection:
+        with connection:
+            cursor = connection.execute('DELETE FROM transactions WHERE id = ?', (transaction_id,))
+            return cursor.rowcount > 0
+
+
 def get_transactions(path=None):
     with closing(sqlite3.connect(database_path(path))) as connection:
         connection.row_factory = sqlite3.Row
