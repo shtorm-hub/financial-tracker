@@ -432,3 +432,24 @@ def test_security_migration_rolls_back_and_requires_existing_file(tmp_path):
     with pytest.raises(sqlite3.OperationalError):
         migrate_security_v2(missing)
     assert not missing.exists()
+
+
+def test_frontend_pages_and_static_assets(raw_client):
+    for page in ('/dashboard', '/login', '/register'):
+        response = raw_client.get(page)
+        assert response.status_code == 200
+        assert b'/static/style.css' in response.data
+        assert b'/static/script.js' in response.data
+    assert raw_client.get('/static/script.js').status_code == 200
+    assert raw_client.get('/').get_json() == {'message': 'Financial Tracker API is running'}
+
+
+def test_frontend_contract_exact_integer_and_safe_text(client):
+    hostile = '<img src=x onerror=alert(1)>'
+    amount = 9223372036854775807
+    response = client.post('/api/transactions', json={'type': 'income', 'amount': amount,
+                            'category': hostile, 'date': '2026-11-20'})
+    assert response.status_code == 201
+    data = client.get('/api/transactions').get_json()
+    assert data[0]['category'] == hostile and data[0]['amount'] == amount
+    assert client.get('/api/balance').get_json()['balance'] == amount

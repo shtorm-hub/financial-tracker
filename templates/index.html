@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finance Tracker</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+</head>
+<body data-page="dashboard">
+<div class="dashboard">
+    <aside class="sidebar">
+        <h2 class="logo">✦ Finance.</h2>
+        <nav class="navigation" aria-label="Main navigation">
+            <a class="active" href="#overview" data-i18n="dashboard">⌂ Dashboard</a>
+            <a href="#transactions" data-i18n="transactions">⇄ Transactions</a>
+            <a href="#statistics" data-i18n="statistics">⌁ Statistics</a>
+        </nav>
+        <button class="sidebar-logout" type="button" id="logout" data-i18n="logout">Log out</button>
+    </aside>
+    <main class="main-content">
+        <header class="topbar"><span data-i18n="welcomeBack">✦ Welcome back,</span><div class="topbar-actions"><label for="language" class="sr-only">Language</label><select id="language" aria-label="Language"><option value="en">EN</option><option value="ru">RU</option><option value="kk">ҚАЗ</option></select><div class="profile" id="profile" aria-hidden="true">•</div></div></header>
+        <section class="welcome" id="overview"><h1 data-i18n="greeting">Welcome back,</h1><h2 id="username">—</h2><p data-i18n="subtitle">Let's track your finances today.</p></section>
+        <p id="dashboard-status" class="notice" role="status" aria-live="polite">Loading your finances…</p>
+        <section class="cards" aria-label="Balance summary">
+            <div class="card balance"><span data-i18n="balance">Total Balance</span><h2 id="balance-value">—</h2><p data-i18n="allTime">All time</p></div>
+            <div class="card income"><span data-i18n="income">Income</span><h2 id="income-value">—</h2><p data-i18n="allTime">All time</p></div>
+            <div class="card expenses"><span data-i18n="expenses">Expenses</span><h2 id="expense-value">—</h2><p data-i18n="allTime">All time</p></div>
+        </section>
+        <section class="content-grid">
+            <div class="glass-panel overview" id="statistics"><h3 data-i18n="history">Balance history</h3><p class="muted" data-i18n="historyHelp">Daily closing balance · all transactions</p><div class="chart" id="chart"><p class="muted" data-i18n="loading">Loading your finances…</p></div><div id="chart-labels" class="chart-labels"></div><h4 class="breakdown-heading" data-i18n="spendingByCategory">Expenses by category</h4><div id="category-breakdown"></div></div>
+            <div class="glass-panel transactions" id="transactions"><div class="panel-heading"><h3 data-i18n="transactionsTitle">Transactions</h3><button id="add-transaction" type="button" class="small-button" data-i18n="add">Add</button></div><div id="transaction-list" aria-live="polite"></div></div>
+        </section>
+        <section class="quick-actions"><h3 data-i18n="quickActions">⚡ Quick Actions</h3><button type="button" id="add-income" data-i18n="addIncome">Add income +</button><button type="button" id="add-expense" data-i18n="addExpense">Add expense −</button><a class="action-link" href="#statistics" data-i18n="viewStatistics">View statistics</a></section>
+    </main>
+</div>
+<dialog id="transaction-dialog" aria-labelledby="form-title">
+    <form id="transaction-form" novalidate>
+        <div class="panel-heading"><h2 id="form-title" data-i18n="addTransaction">Add transaction</h2><button type="button" id="close-dialog" class="icon-button" aria-label="Close">×</button></div>
+        <label><span data-i18n="type">Type</span><select name="type" required><option value="income" data-i18n="income">Income</option><option value="expense" data-i18n="expenses">Expenses</option></select></label>
+        <label><span data-i18n="amount">Amount (₸)</span><input name="amount" inputmode="numeric" pattern="[0-9]+" maxlength="19" required autocomplete="off"></label>
+        <label><span data-i18n="category">Category (optional)</span><input name="category" maxlength="100"></label>
+        <label><span data-i18n="description">Description (optional)</span><input name="description" maxlength="1000"></label>
+        <label><span data-i18n="date">Date</span><input type="date" name="date" required></label>
+        <p id="form-error" class="form-error" role="alert"></p><button type="submit" class="primary-button" data-i18n="save">Save transaction</button>
+    </form>
+</dialog>
+</body></html>

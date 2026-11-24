@@ -8,7 +8,7 @@ import sqlite3
 import time
 from datetime import datetime, timedelta
 
-from flask import Flask, current_app, g, request, session
+from flask import Flask, current_app, g, request, session, render_template
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -134,6 +134,18 @@ def create_app(database=None, config=None):
     @app.get('/')
     def home():
         return {'message': 'Financial Tracker API is running'}
+
+    @app.get('/dashboard')
+    def dashboard_page():
+        return render_template('index.html')
+
+    @app.get('/login')
+    def login_page():
+        return render_template('auth.html', mode='login')
+
+    @app.get('/register')
+    def register_page():
+        return render_template('auth.html', mode='register')
 
     @app.get('/api/auth/csrf')
     def csrf():
