@@ -56,3 +56,22 @@ By default, validly formatted login attempts (successful or failed) are limited 
 By default `X-Forwarded-For` is ignored. Only when the app is reachable exclusively through a known chain of trusted reverse proxies, set `FINANCIAL_TRUSTED_PROXY_HOPS` to the exact number of trusted proxy hops that correctly set this header. Configure the proxy to replace untrusted forwarded headers and block direct access to the application. A wrong hop count or bypassable proxy allows spoofing and defeats IP limits. All WSGI workers must share the same persistent SQLite file and correct system time; separate database copies do not share limits or revocations.
 
 Generate a random secret using the command above and store it in a secret manager or protected environment. The startup checks reject missing, short, and some obviously weak secrets, but cannot establish that a key is random. Never use a memorable phrase or reuse a test key. Changing the key invalidates cookies and changes hashed rate-limit keys. Review HTTPS, registration abuse controls, password recovery, secure secret storage, CORS/origins, backup and restore, persistent storage, and SQLite concurrency before deployment. In-flight operations that already passed session validation may complete while a concurrent logout occurs.
+
+## Local website on Windows PowerShell
+
+These commands create a **new separate** database named `local-financial.db`; they do not open or migrate the existing `financial.db`. Run the migration commands only for a new database. Preserve `local-financial.db` if you want to keep the accounts and transactions you create; do not run migrations against the existing personal database without its owner's separate approval.
+
+```powershell
+cd 'C:\Users\elama\Downloads\VS.Code\.vscode\financial-tracker'
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$env:FINANCIAL_DATABASE = Join-Path (Get-Location) 'local-financial.db'
+$env:FINANCIAL_SECRET_KEY = .\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_urlsafe(48))"
+.\.venv\Scripts\python.exe migrate.py --database $env:FINANCIAL_DATABASE
+.\.venv\Scripts\python.exe migrate_v2.py --database $env:FINANCIAL_DATABASE
+.\.venv\Scripts\python.exe -c "from app import app; app.config['SESSION_COOKIE_SECURE']=False; app.run(host='127.0.0.1', port=5000, debug=False)"
+```
+
+Open `http://127.0.0.1:5000/register`, create an account, and sign in. On later starts, set the environment variables and run only the last command, not the migration commands. The generated key lasts for the current PowerShell session; changing it invalidates existing browser sessions. To keep sessions across restarts, store a randomly generated key securely outside Git and load it instead. The final command disables secure cookies **only for this localhost HTTP development process**; never use that override or Flask's development server in production.
+
+The dashboard is at `/dashboard`, login at `/login`, and registration at `/register`; `GET /` retains its original JSON API response. The interface supports English, Russian, and Kazakh via the language selector. It displays KZT as whole tenge and preserves exact integer amounts and totals using `BigInt`; a modern browser with BigInt and HTML dialog support is required. The chart groups all transactions by date, showing each day's closing balance; future-dated transactions are included. Transaction text is inserted as text, not HTML.
