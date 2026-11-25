@@ -1,47 +1,20 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Finance Tracker</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-    <script src="{{ url_for('static', filename='script.js') }}" defer></script>
-</head>
-<body data-page="dashboard">
-<div class="dashboard">
-    <aside class="sidebar">
-        <h2 class="logo">✦ Finance.</h2>
-        <nav class="navigation" aria-label="Main navigation">
-            <a class="active" href="#overview" data-i18n="dashboard">⌂ Dashboard</a>
-            <a href="#transactions" data-i18n="transactions">⇄ Transactions</a>
-            <a href="#statistics" data-i18n="statistics">⌁ Statistics</a>
-        </nav>
-        <button class="sidebar-logout" type="button" id="logout" data-i18n="logout">Log out</button>
-    </aside>
-    <main class="main-content">
-        <header class="topbar"><span data-i18n="welcomeBack">✦ Welcome back,</span><div class="topbar-actions"><label for="language" class="sr-only">Language</label><select id="language" aria-label="Language"><option value="en">EN</option><option value="ru">RU</option><option value="kk">ҚАЗ</option></select><div class="profile" id="profile" aria-hidden="true">•</div></div></header>
-        <section class="welcome" id="overview"><h1 data-i18n="greeting">Welcome back,</h1><h2 id="username">—</h2><p data-i18n="subtitle">Let's track your finances today.</p></section>
-        <p id="dashboard-status" class="notice" role="status" aria-live="polite">Loading your finances…</p>
-        <section class="cards" aria-label="Balance summary">
-            <div class="card balance"><span data-i18n="balance">Total Balance</span><h2 id="balance-value">—</h2><p data-i18n="allTime">All time</p></div>
-            <div class="card income"><span data-i18n="income">Income</span><h2 id="income-value">—</h2><p data-i18n="allTime">All time</p></div>
-            <div class="card expenses"><span data-i18n="expenses">Expenses</span><h2 id="expense-value">—</h2><p data-i18n="allTime">All time</p></div>
-        </section>
-        <section class="content-grid">
-            <div class="glass-panel overview" id="statistics"><h3 data-i18n="history">Balance history</h3><p class="muted" data-i18n="historyHelp">Daily closing balance · all transactions</p><div class="chart" id="chart"><p class="muted" data-i18n="loading">Loading your finances…</p></div><div id="chart-labels" class="chart-labels"></div><h4 class="breakdown-heading" data-i18n="spendingByCategory">Expenses by category</h4><div id="category-breakdown"></div></div>
-            <div class="glass-panel transactions" id="transactions"><div class="panel-heading"><h3 data-i18n="transactionsTitle">Transactions</h3><button id="add-transaction" type="button" class="small-button" data-i18n="add">Add</button></div><div id="transaction-list" aria-live="polite"></div></div>
-        </section>
-        <section class="quick-actions"><h3 data-i18n="quickActions">⚡ Quick Actions</h3><button type="button" id="add-income" data-i18n="addIncome">Add income +</button><button type="button" id="add-expense" data-i18n="addExpense">Add expense −</button><a class="action-link" href="#statistics" data-i18n="viewStatistics">View statistics</a></section>
-    </main>
-</div>
-<dialog id="transaction-dialog" aria-labelledby="form-title">
-    <form id="transaction-form" novalidate>
-        <div class="panel-heading"><h2 id="form-title" data-i18n="addTransaction">Add transaction</h2><button type="button" id="close-dialog" class="icon-button" aria-label="Close">×</button></div>
-        <label><span data-i18n="type">Type</span><select name="type" required><option value="income" data-i18n="income">Income</option><option value="expense" data-i18n="expenses">Expenses</option></select></label>
-        <label><span data-i18n="amount">Amount (₸)</span><input name="amount" inputmode="numeric" pattern="[0-9]+" maxlength="19" required autocomplete="off"></label>
-        <label><span data-i18n="category">Category (optional)</span><input name="category" maxlength="100"></label>
-        <label><span data-i18n="description">Description (optional)</span><input name="description" maxlength="1000"></label>
-        <label><span data-i18n="date">Date</span><input type="date" name="date" required></label>
-        <p id="form-error" class="form-error" role="alert"></p><button type="submit" class="primary-button" data-i18n="save">Save transaction</button>
-    </form>
-</dialog>
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="theme-color" content="#f6f2fc"><title>Finance Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}"><script src="{{ url_for('static', filename='script.js') }}" defer></script></head>
+<body data-page="dashboard"><div class="ambient ambient-one"></div><div class="ambient ambient-two"></div><div class="ambient ambient-three"></div><div class="app-shell">
+<aside class="sidebar glass"><a class="brand" href="#dashboard"><span class="brand-mark">✦</span> Finance<span class="brand-dot">.</span></a><div class="workspace-label" data-i18n="project">PROJECT</div>
+<nav class="nav-list" aria-label="Main navigation" data-i18n-aria="navigationLabel"><a class="nav-link active" href="#dashboard"><span class="nav-icon">⌂</span><span data-i18n="navOverview">Overview</span></a><a class="nav-link" href="#transactions"><span class="nav-icon">⇄</span><span data-i18n="navTransactions">Transactions</span></a><a class="nav-link" href="#statistics"><span class="nav-icon">▥</span><span data-i18n="navStatistics">Statistics</span></a></nav>
+<div class="sidebar-bottom"><div class="project-label"><span class="avatar" id="profile">•</span><span><b id="username">—</b><small data-i18n="personalAccount">Personal account</small></span></div></div><button type="button" class="logout-button" id="logout" data-i18n="logout">Log out</button></aside>
+<main class="main-content" id="dashboard"><header class="topbar"><div class="breadcrumb"><span>Finance Tracker</span><b>/</b><strong data-i18n="navOverview">Overview</strong></div><div class="top-actions"><label class="search"><span aria-hidden="true">⌕</span><input id="search-input" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="Search transactions" aria-label="Search transactions"></label><label class="sr-only" for="language">Language</label><select id="language" aria-label="Language" data-i18n-aria="languageLabel"><option value="en">EN</option><option value="ru">RU</option><option value="kk">ҚАЗ</option></select></div></header>
+<section class="welcome-row"><div><div class="eyebrow"><span class="sparkle">✦</span><span data-i18n="dashboardEyebrow">FINANCIAL DASHBOARD</span></div><h1><span data-i18n="financialOverview">Financial overview</span><span class="wave">✦</span></h1><p data-i18n="overviewHelp">Your income, expenses and recent transactions.</p></div></section>
+<p id="dashboard-status" class="notice" role="status" aria-live="polite">Loading your finances…</p>
+<section class="summary-grid" aria-label="Account summary" data-i18n-aria="summaryLabel"><article class="summary-card balance-card"><div class="card-top"><span data-i18n="balance">Total balance</span><span class="card-symbol">✳</span></div><div class="balance-value" id="balance-value">—</div><div class="balance-bottom"><span data-i18n="allTime">All time</span></div><div class="balance-glow"></div></article>
+<article class="summary-card"><div class="card-top"><span data-i18n="income">Income</span><span class="metric-icon income-icon">↙</span></div><div class="metric-value" id="income-value">—</div><div class="metric-foot" data-i18n="selectedPeriod">Selected period</div></article>
+<article class="summary-card"><div class="card-top"><span data-i18n="expenses">Expenses</span><span class="metric-icon expense-icon">↗</span></div><div class="metric-value" id="expense-value">—</div><div class="metric-foot" data-i18n="selectedPeriod">Selected period</div></article></section>
+<section class="content-grid" id="statistics"><article class="panel overview-panel"><div class="panel-heading"><div><div class="eyebrow small-eyebrow" data-i18n="cashFlowEyebrow">CASH FLOW</div><h2 data-i18n="cashFlow">Cash flow</h2></div><div class="chart-controls"><span class="chart-legend"><i></i><span data-i18n="income">Income</span><i class="legend-expense"></i><span data-i18n="expenses">Expenses</span></span><label class="sr-only" for="period-select" data-i18n="range">Period</label><select id="period-select"><option value="week" data-i18n="week">This week</option><option value="month" data-i18n="month" selected>This month</option><option value="year" data-i18n="year">This year</option><option value="all" data-i18n="allTime">All time</option></select></div></div><div class="chart-summary"><strong id="chart-total">—</strong><span data-i18n="netPeriod">Net for selected period</span></div><div id="chart" class="chart-wrap" role="img" aria-label="Cash flow chart"></div><div id="chart-labels" class="chart-labels"></div></article>
+<article class="panel spending-panel"><div class="panel-heading"><div><div class="eyebrow small-eyebrow" data-i18n="spendingEyebrow">SPENDING BREAKDOWN</div><h2 data-i18n="spendingByCategory">Expenses by category</h2></div></div><div class="spending-content"><div class="donut-wrap"><div class="donut" id="donut"><div class="donut-center"><strong id="donut-total">—</strong><small data-i18n="totalExpenses">Total expenses</small></div></div></div><div class="category-list" id="category-breakdown"></div></div><p class="period-caption" data-i18n="selectedPeriod">Selected period</p></article>
+<article class="panel transactions-panel" id="transactions"><div class="panel-heading transactions-heading"><div><div class="eyebrow small-eyebrow" data-i18n="recentEyebrow">YOUR ACTIVITY</div><h2 data-i18n="transactionsTitle">Transactions</h2></div><button id="add-transaction" class="text-link" type="button" data-i18n="add">Add</button></div><div class="transaction-table"><div class="table-head"><span data-i18n="descriptionShort">DESCRIPTION</span><span data-i18n="categoryShort">CATEGORY</span><span data-i18n="date">Date</span><span data-i18n="amountShort">AMOUNT</span><span></span></div><div id="transaction-list" aria-live="polite"></div></div></article>
+<article class="panel quick-panel"><div class="panel-heading"><div><div class="eyebrow small-eyebrow" data-i18n="manageEyebrow">MANAGE</div><h2 data-i18n="quickActions">Quick actions</h2></div></div><p class="quick-subtitle" data-i18n="quickHelp">Keep your finances up to date.</p><button class="quick-action" id="add-income" type="button"><span class="quick-icon add-income">＋</span><span><b data-i18n="addIncome">Add income</b><small data-i18n="recordIncome">Record income</small></span></button><button class="quick-action" id="add-expense" type="button"><span class="quick-icon add-expense">−</span><span><b data-i18n="addExpense">Add expense</b><small data-i18n="recordExpense">Record expense</small></span></button></article></section><footer class="footer-note"><span>Finance Tracker <b>✦</b></span><span data-i18n="tengeNote">All amounts in tenge ₸</span></footer></main></div>
+<dialog id="transaction-dialog" class="modal" aria-labelledby="form-title"><form id="transaction-form" novalidate><button type="button" id="close-dialog" class="modal-close" aria-label="Close" data-i18n-aria="close">×</button><div class="eyebrow small-eyebrow" data-i18n="newOperation">TRANSACTION</div><h2 id="form-title" data-i18n="addTransaction">Add transaction</h2><label><span data-i18n="type">Type</span><select name="type" required><option value="income" data-i18n="income">Income</option><option value="expense" data-i18n="expenses">Expenses</option></select></label><label><span data-i18n="description">Description (optional)</span><input name="description" maxlength="1000"></label><div class="modal-row"><label><span data-i18n="amount">Amount (₸)</span><input name="amount" inputmode="numeric" pattern="[0-9]+" maxlength="19" required autocomplete="off"></label><label><span data-i18n="category">Category (optional)</span><input name="category" maxlength="100"></label></div><label><span data-i18n="date">Date</span><input type="date" name="date" required></label><p id="form-error" class="form-error" role="alert"></p><button type="submit" class="submit-button" data-i18n="save">Save transaction</button></form></dialog>
 </body></html>

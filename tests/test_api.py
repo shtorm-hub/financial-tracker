@@ -453,3 +453,24 @@ def test_frontend_contract_exact_integer_and_safe_text(client):
     data = client.get('/api/transactions').get_json()
     assert data[0]['category'] == hostile and data[0]['amount'] == amount
     assert client.get('/api/balance').get_json()['balance'] == amount
+
+
+def test_redesign_dashboard_exposes_real_data_controls(raw_client):
+    page = raw_client.get('/dashboard').get_data(as_text=True)
+    for element_id in ('search-input', 'period-select', 'chart', 'donut', 'category-breakdown',
+                       'transaction-list', 'transaction-dialog', 'logout'):
+        assert f'id="{element_id}"' in page
+    assert all(f'value="{period}"' in page for period in ('week', 'month', 'year', 'all'))
+    assert '245 000' not in page and '12,5%' not in page
+    assert 'Upgrade to Pro' not in page
+
+
+def test_redesign_data_contract_preserves_negative_large_balance(client):
+    maximum = 9223372036854775807
+    hostile = '<img src=x onerror=alert(1)>'
+    response = client.post('/api/transactions', json={'type': 'expense', 'amount': maximum,
+                            'category': hostile, 'description': 'search me', 'date': '2026-01-10'})
+    assert response.status_code == 201
+    assert client.get('/api/balance').get_json()['balance'] == -maximum
+    entry = client.get('/api/transactions').get_json()[0]
+    assert entry['category'] == hostile and entry['description'] == 'search me'
