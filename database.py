@@ -1,10 +1,13 @@
 import os
+import json
+import hashlib
+import time
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
 
 DEFAULT_DATABASE = Path(__file__).resolve().parent / 'financial.db'
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def database_path(path=None):
@@ -318,3 +321,65 @@ def move_goal_funds(path, user_id, goal_id, amount, deposit):
             new_saved = goal['saved_amount'] - amount
         connection.execute('UPDATE goals SET saved_amount = ? WHERE id = ? AND user_id = ?', (new_saved, goal_id, user_id))
         return {'goal': goal_row(connection, user_id, goal_id), 'summary': snapshot(connection, user_id)}
+
+
+def migrate_idempotency_v4(path):
+    with write_transaction(path) as connection:
+        version = connection.execute('PRAGMA user_version').fetchone()[0]
+        if version == 4:
+            return
+        if version != 3:
+            raise RuntimeError('Idempotency migration requires schema version 3')
+        connection.execute("""CREATE TABLE idempotency_records (
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            idempotency_key TEXT NOT NULL CHECK(length(idempotency_key) = 36),
+            operation TEXT NOT NULL, resource_id INTEGER,
+            request_fingerprint TEXT NOT NULL CHECK(length(request_fingerprint) = 64),
+            response_status INTEGER NOT NULL,
+            response_body TEXT NOT NULL CHECK(length(response_body) <= 16384),
+            created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+            UNIQUE(user_id, idempotency_key)
+        )""")
+        connection.execute('CREATE INDEX idx_idempotency_expiry ON idempotency_records(expires_at)')
+        if connection.execute('PRAGMA foreign_key_check').fetchone():
+            raise RuntimeError('Foreign key check failed')
+        connection.execute('PRAGMA user_version = 4')
+
+
+def idempotent_financial_operation(path, user_id, key, operation, resource_id, values):
+    canonical = json.dumps([1, operation, resource_id, values], ensure_ascii=True, separators=(',', ':'))
+    fingerprint = hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+    now = int(time.time())
+    with write_transaction(path) as connection:
+        connection.execute('DELETE FROM idempotency_records WHERE rowid IN (SELECT rowid FROM idempotency_records WHERE expires_at <= ? ORDER BY expires_at LIMIT 100)', (now,))
+        row = connection.execute('SELECT request_fingerprint, response_status, response_body FROM idempotency_records WHERE user_id = ? AND idempotency_key = ?', (user_id, key)).fetchone()
+        if row:
+            if row[0] != fingerprint:
+                raise FinancialConflict('idempotency_key_conflict')
+            return row[1], json.loads(row[2]), True
+        if operation == 'transaction':
+            connection.execute('INSERT INTO transactions (user_id, type, amount, category, description, date) VALUES (?, ?, ?, ?, ?, ?)', (user_id, *values))
+            assert_reserves(connection, user_id)
+            status, result = 201, {'message': 'Transaction created'}
+        else:
+            goal = goal_row(connection, user_id, resource_id) if resource_id <= 2**63 - 1 else None
+            if goal is None:
+                return 404, {'error': 'Goal not found', 'code': 'goal_not_found'}, False
+            amount = values[0]
+            state = snapshot(connection, user_id)
+            if operation == 'deposit':
+                if amount > state['available_balance']:
+                    raise FinancialConflict('insufficient_available')
+                if amount > goal['target_amount'] - goal['saved_amount']:
+                    raise FinancialConflict('exceeds_goal_target')
+                new_saved = goal['saved_amount'] + amount
+            else:
+                if amount > goal['saved_amount']:
+                    raise FinancialConflict('insufficient_goal_funds')
+                new_saved = goal['saved_amount'] - amount
+            connection.execute('UPDATE goals SET saved_amount = ? WHERE id = ? AND user_id = ?', (new_saved, resource_id, user_id))
+            status, result = 200, {'goal': goal_row(connection, user_id, resource_id), 'summary': snapshot(connection, user_id)}
+        body = json.dumps(result, ensure_ascii=True, separators=(',', ':'))
+        connection.execute('INSERT INTO idempotency_records (user_id, idempotency_key, operation, resource_id, request_fingerprint, response_status, response_body, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                           (user_id, key, operation, resource_id, fingerprint, status, body, now, now + 30 * 86400))
+        return status, result, False

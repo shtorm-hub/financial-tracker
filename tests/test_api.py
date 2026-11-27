@@ -1,6 +1,7 @@
 import importlib
 import sqlite3
 import sys
+import uuid
 
 import pytest
 
@@ -12,6 +13,8 @@ def raw_client(tmp_path, monkeypatch):
     migrate_database(db)
     migrate_security_v2(db)
     migrate_goals_v3(db)
+    from database import migrate_idempotency_v4
+    migrate_idempotency_v4(db)
     monkeypatch.setenv('FINANCIAL_DATABASE', str(db))
     monkeypatch.setenv('FINANCIAL_SECRET_KEY', 'test-only-secret-key-32-characters-long')
     sys.modules.pop('app', None)
@@ -31,6 +34,8 @@ class AuthenticatedClient:
     def request(self, method, url, **kwargs):
         token = self.client.get('/api/auth/csrf').get_json()['csrf_token']
         kwargs.setdefault('headers', {})['X-CSRF-Token'] = token
+        if method == 'post' and (url == '/api/transactions' or url.endswith('/deposit') or url.endswith('/withdraw')):
+            kwargs['headers'].setdefault('Idempotency-Key', str(uuid.uuid4()))
         return getattr(self.client, method)(url, **kwargs)
 
     def post(self, url, **kwargs):
@@ -203,7 +208,7 @@ def test_csrf_all_state_changes(raw_client):
     assert raw_client.post('/api/auth/logout').status_code == 403
     token = raw_client.get('/api/auth/csrf').get_json()['csrf_token']
     assert raw_client.post('/api/transactions', json=transaction, headers={'X-CSRF-Token': 'wrong'}).status_code == 403
-    assert raw_client.post('/api/transactions', json=transaction, headers={'X-CSRF-Token': token}).status_code == 201
+    assert raw_client.post('/api/transactions', json=transaction, headers={'X-CSRF-Token': token, 'Idempotency-Key': str(uuid.uuid4())}).status_code == 201
     other = app.test_client()
     other_token = other.get('/api/auth/csrf').get_json()['csrf_token']
     assert raw_client.delete('/api/transactions/1', headers={'X-CSRF-Token': other_token}).status_code == 403
@@ -235,6 +240,8 @@ def test_legacy_rows_hidden_and_migration_rollback(tmp_path, monkeypatch):
     migrate_database(db)
     migrate_security_v2(db)
     migrate_goals_v3(db)
+    from database import migrate_idempotency_v4
+    migrate_idempotency_v4(db)
     monkeypatch.setenv('FINANCIAL_DATABASE', str(db))
     monkeypatch.setenv('FINANCIAL_SECRET_KEY', 'test-only-secret-key-32-characters-long')
     sys.modules.pop('app', None)
@@ -266,6 +273,8 @@ def test_legacy_assignment_requires_matching_user_and_count(tmp_path):
     migrate_database(db)
     migrate_security_v2(db)
     migrate_goals_v3(db)
+    from database import migrate_idempotency_v4
+    migrate_idempotency_v4(db)
     with sqlite3.connect(db) as c:
         c.execute("INSERT INTO users (username, password_hash) VALUES ('alice', 'hash')")
         c.execute("INSERT INTO transactions (type, amount, date) VALUES ('income', 42, '2026-11-19')")
@@ -601,6 +610,8 @@ def test_claim_legacy_cannot_break_reservation(tmp_path):
     from database import migrate_database,migrate_security_v2,migrate_goals_v3,add_transaction,create_goal,move_goal_funds,FinancialConflict
     from claim_legacy import claim_unassigned
     db=tmp_path/'claim.db'; migrate_database(db); migrate_security_v2(db); migrate_goals_v3(db)
+    from database import migrate_idempotency_v4
+    migrate_idempotency_v4(db)
     with sqlite3.connect(db) as c:
         c.execute("INSERT INTO users (username,password_hash) VALUES ('alice','hash')")
         c.execute("INSERT INTO transactions (type,amount,date) VALUES ('expense',30,'2026-01-01')")
@@ -642,3 +653,147 @@ def test_goal_invalid_body_cannot_change_saved_amount(client):
     response=client.put(f'/api/goals/{gid}',json={'title':'Target','target_amount':10,'saved_amount':8})
     assert response.status_code==400
     assert client.get('/api/goals').get_json()[0]['saved_amount']==0
+
+
+def test_idempotency_transaction_replay_and_conflict(client):
+    key = str(uuid.uuid4()); headers = {'Idempotency-Key': key}
+    data = {'type': 'income', 'amount': 100, 'date': '2026-11-19'}
+    first = client.post('/api/transactions', json=data, headers=headers.copy())
+    replay = client.post('/api/transactions', json=data, headers=headers.copy())
+    assert first.status_code == replay.status_code == 201
+    assert first.get_json() == replay.get_json()
+    assert replay.headers['Idempotency-Replayed'] == 'true'
+    assert client.post('/api/transactions', json={**data, 'amount': 101}, headers=headers.copy()).get_json()['code'] == 'idempotency_key_conflict'
+    assert client.post('/api/transactions', json=data).status_code == 201
+    assert client.get('/api/balance').get_json()['balance'] == 200
+
+
+def test_idempotency_goal_replay_and_cross_endpoint(client):
+    client.post('/api/transactions', json={'type':'income','amount':100,'date':'2026-01-01'})
+    one = client.post('/api/goals', json={'title':'A','target_amount':100}).get_json()['id']
+    two = client.post('/api/goals', json={'title':'B','target_amount':100}).get_json()['id']
+    key = str(uuid.uuid4()); headers = {'Idempotency-Key':key}
+    url = f'/api/goals/{one}/deposit'
+    first = client.post(url, json={'amount':30}, headers=headers.copy())
+    assert client.post(url, json={'amount':30}, headers=headers.copy()).get_json() == first.get_json()
+    assert client.post(f'/api/goals/{two}/deposit', json={'amount':30}, headers=headers.copy()).status_code == 409
+    assert client.post(f'/api/goals/{one}/withdraw', json={'amount':30}, headers=headers.copy()).status_code == 409
+    assert client.post('/api/transactions',json={'type':'income','amount':1,'date':'2026-01-01'},headers=headers.copy()).status_code == 409
+    key2 = str(uuid.uuid4()); h2 = {'Idempotency-Key':key2}
+    withdrawal = client.post(f'/api/goals/{one}/withdraw',json={'amount':10},headers=h2.copy())
+    assert client.post(f'/api/goals/{one}/withdraw',json={'amount':10},headers=h2.copy()).get_json() == withdrawal.get_json()
+    assert client.get('/api/goals/summary').get_json()['reserved_savings'] == 20
+
+
+def test_idempotency_missing_invalid_and_csrf(raw_client):
+    c=AuthenticatedClient(raw_client); creds={'username':'alice','password':'alice-password-123'}
+    c.post('/api/auth/register',json=creds);c.post('/api/auth/login',json=creds)
+    token=raw_client.get('/api/auth/csrf').get_json()['csrf_token']
+    data={'type':'income','amount':1,'date':'2026-01-01'}
+    for key in (None,'abc',str(uuid.uuid1())):
+        headers={'X-CSRF-Token':token}
+        if key is not None: headers['Idempotency-Key']=key
+        assert raw_client.post('/api/transactions',json=data,headers=headers).get_json()['code']=='invalid_idempotency_key'
+    key=str(uuid.uuid4()); headers={'X-CSRF-Token':token,'Idempotency-Key':key}
+    assert raw_client.post('/api/transactions',json=data,headers=headers).status_code==201
+    assert raw_client.post('/api/transactions',json=data,headers={'Idempotency-Key':key}).status_code==403
+    c.post('/api/auth/logout')
+    assert raw_client.post('/api/transactions',json=data,headers=headers).status_code==401
+
+
+def test_idempotency_user_isolation_and_restart(raw_client):
+    from app import create_app
+    a=AuthenticatedClient(raw_client); creds={'username':'alice','password':'alice-password-123'}
+    a.post('/api/auth/register',json=creds); a.post('/api/auth/login',json=creds)
+    key=str(uuid.uuid4()); data={'type':'income','amount':7,'date':'2026-01-01'}
+    assert a.post('/api/transactions',json=data,headers={'Idempotency-Key':key}).status_code==201
+    app=create_app(raw_client.application.config['DATABASE'],{'SECRET_KEY':'test-only-secret-key-32-characters-long','TESTING':True,'SESSION_COOKIE_SECURE':False})
+    restarted=AuthenticatedClient(app.test_client()); restarted.post('/api/auth/login',json=creds)
+    replay=restarted.post('/api/transactions',json=data,headers={'Idempotency-Key':key})
+    assert replay.headers['Idempotency-Replayed']=='true'
+    b=AuthenticatedClient(app.test_client()); bcreds={'username':'bobby','password':'bobby-password-123'}
+    b.post('/api/auth/register',json=bcreds); b.post('/api/auth/login',json=bcreds)
+    assert b.post('/api/transactions',json=data,headers={'Idempotency-Key':key}).status_code==201
+    assert len(restarted.get('/api/transactions').get_json()) == len(b.get('/api/transactions').get_json()) == 1
+
+
+def test_idempotency_concurrency_and_rollback(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from database import migrate_database,migrate_security_v2,migrate_goals_v3,migrate_idempotency_v4,create_user,idempotent_financial_operation,FinancialConflict
+    db=tmp_path/'isolated.db';migrate_database(db);migrate_security_v2(db);migrate_goals_v3(db);migrate_idempotency_v4(db)
+    create_user('alice','hash',db);key=str(uuid.uuid4()); values=('income',100,None,None,'2026-01-01')
+    def send(_): return idempotent_financial_operation(db,1,key,'transaction',None,values)
+    with ThreadPoolExecutor(max_workers=2) as pool: results=list(pool.map(send,range(2)))
+    assert sorted(r[2] for r in results)==[False,True]
+    with sqlite3.connect(db) as c:
+        assert c.execute('SELECT count(*) FROM transactions').fetchone()[0]==1
+        assert c.execute('SELECT count(*) FROM idempotency_records').fetchone()[0]==1
+        c.execute("CREATE TRIGGER fail_record BEFORE INSERT ON idempotency_records BEGIN SELECT RAISE(ABORT, 'injected'); END")
+    with pytest.raises(sqlite3.IntegrityError): idempotent_financial_operation(db,1,str(uuid.uuid4()),'transaction',None,values)
+    with sqlite3.connect(db) as c: assert c.execute('SELECT count(*) FROM transactions').fetchone()[0]==1
+
+
+def test_idempotency_migration_preserves_and_rolls_back(tmp_path):
+    from database import migrate_database,migrate_security_v2,migrate_goals_v3,migrate_idempotency_v4
+    db=tmp_path/'migration.db';migrate_database(db);migrate_security_v2(db);migrate_goals_v3(db)
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT INTO users(username,password_hash) VALUES ('alice','hash')")
+        c.execute("INSERT INTO transactions(user_id,type,amount,date) VALUES (1,'income',100,'2026-01-01')")
+        c.execute("INSERT INTO goals(user_id,title,target_amount,saved_amount,created_at) VALUES (1,'Goal',100,30,'2026-01-01')")
+    migrate_idempotency_v4(db);migrate_idempotency_v4(db)
+    with sqlite3.connect(db) as c:
+        assert c.execute('PRAGMA user_version').fetchone()[0]==4
+        assert c.execute('SELECT amount FROM transactions').fetchall()==[(100,)]
+        assert c.execute('SELECT saved_amount FROM goals').fetchall()==[(30,)]
+        assert c.execute('SELECT username FROM users').fetchall()==[('alice',)]
+    bad=tmp_path/'bad.db';migrate_database(bad);migrate_security_v2(bad);migrate_goals_v3(bad)
+    with sqlite3.connect(bad) as c: c.execute('CREATE INDEX idx_idempotency_expiry ON goals(id)')
+    with pytest.raises(sqlite3.Error): migrate_idempotency_v4(bad)
+    with sqlite3.connect(bad) as c:
+        assert c.execute('PRAGMA user_version').fetchone()[0]==3
+        assert c.execute("SELECT name FROM sqlite_master WHERE name='idempotency_records'").fetchone() is None
+
+
+def test_idempotency_expiry_and_bounded_cleanup(tmp_path, monkeypatch):
+    import database
+    db=tmp_path/'expiry.db';database.migrate_database(db);database.migrate_security_v2(db);database.migrate_goals_v3(db);database.migrate_idempotency_v4(db)
+    database.create_user('alice','hash',db); now=2_000_000_000
+    monkeypatch.setattr(database.time, 'time', lambda: now)
+    key=str(uuid.uuid4()); data=('income',1,None,None,'2026-01-01')
+    database.idempotent_financial_operation(db,1,key,'transaction',None,data)
+    monkeypatch.setattr(database.time, 'time', lambda: now+30*86400)
+    assert database.idempotent_financial_operation(db,1,key,'transaction',None,data)[2] is False
+    with sqlite3.connect(db) as c: assert c.execute('SELECT count(*) FROM transactions').fetchone()[0]==2
+
+
+def test_idempotency_lock_failure_then_safe_retry(tmp_path, monkeypatch):
+    import database
+    db=tmp_path/'lock.db';database.migrate_database(db);database.migrate_security_v2(db);database.migrate_goals_v3(db);database.migrate_idempotency_v4(db)
+    database.create_user('alice','hash',db); original=database.connect
+    def quick_connect(path, **kwargs):
+        con=original(path, **kwargs); con.execute('PRAGMA busy_timeout=1'); return con
+    monkeypatch.setattr(database,'connect',quick_connect)
+    key=str(uuid.uuid4()); data=('income',5,None,None,'2026-01-01')
+    lock=sqlite3.connect(db);lock.execute('BEGIN IMMEDIATE')
+    try:
+        with pytest.raises(sqlite3.OperationalError): database.idempotent_financial_operation(db,1,key,'transaction',None,data)
+    finally: lock.rollback();lock.close()
+    assert database.idempotent_financial_operation(db,1,key,'transaction',None,data)[2] is False
+    assert database.idempotent_financial_operation(db,1,key,'transaction',None,data)[2] is True
+    with sqlite3.connect(db) as c: assert c.execute('SELECT count(*) FROM transactions').fetchone()[0]==1
+
+
+def test_idempotency_goal_concurrent_replay_after_deletion(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from database import migrate_database,migrate_security_v2,migrate_goals_v3,migrate_idempotency_v4,create_user,add_transaction,create_goal,idempotent_financial_operation,remove_goal
+    db=tmp_path/'goal-race.db';migrate_database(db);migrate_security_v2(db);migrate_goals_v3(db);migrate_idempotency_v4(db)
+    create_user('alice','hash',db);add_transaction(1,'income',100,None,None,'2026-01-01',db)
+    goal=create_goal(db,1,'goal',100,None,'2026-01-01')['id']; key=str(uuid.uuid4())
+    def send(_): return idempotent_financial_operation(db,1,key,'deposit',goal,(25,))
+    with ThreadPoolExecutor(max_workers=2) as pool: responses=list(pool.map(send,range(2)))
+    assert sorted(result[2] for result in responses)==[False,True]
+    assert responses[0][1]==responses[1][1]
+    with sqlite3.connect(db) as c: assert c.execute('SELECT saved_amount FROM goals').fetchone()[0]==25
+    assert remove_goal(db,1,goal)
+    replay=idempotent_financial_operation(db,1,key,'deposit',goal,(25,))
+    assert replay[2] is True and replay[1]==responses[0][1]

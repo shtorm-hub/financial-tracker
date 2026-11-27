@@ -6,6 +6,7 @@ import re
 import secrets
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from flask import Flask, current_app, g, request, session, render_template
@@ -18,7 +19,7 @@ from database import (add_transaction, check_database, create_user, database_pat
                       get_session_user, update_transaction, create_session,
                       reserve_login_attempt, revoke_session, FinancialConflict,
                       list_goals, goal_summary, create_goal, change_goal, remove_goal,
-                      move_goal_funds)
+                      move_goal_funds, idempotent_financial_operation)
 
 MAX_AMOUNT = 2**63 - 1
 MAX_CATEGORY_LENGTH = 100
@@ -219,13 +220,30 @@ def create_app(database=None, config=None):
     def transactions():
         return get_transactions(g.user['id'], current_app.config['DATABASE'])
 
+    def idempotency_key():
+        key = request.headers.get('Idempotency-Key', '')
+        try:
+            parsed = uuid.UUID(key)
+            if parsed.version != 4 or str(parsed) != key:
+                raise ValueError()
+        except (ValueError, AttributeError):
+            return None
+        return key
+
+    def perform_idempotent(operation, resource_id, values):
+        key = idempotency_key()
+        if key is None:
+            return {'error': 'invalid_idempotency_key', 'code': 'invalid_idempotency_key'}, 400
+        status, body, replay = idempotent_financial_operation(
+            current_app.config['DATABASE'], g.user['id'], key, operation, resource_id, values)
+        return body, status, ({'Idempotency-Replayed': 'true'} if replay else {})
+
     @app.post('/api/transactions')
     def create_transactions():
         values, error = validate_transaction(request.get_json())
         if error:
             return {'error': error}, 400
-        add_transaction(g.user['id'], *values, path=current_app.config['DATABASE'])
-        return {'message': 'Transaction created'}, 201
+        return perform_idempotent('transaction', None, values)
 
     @app.put('/api/transactions/<int:transaction_id>')
     def replace_transaction(transaction_id):
@@ -302,8 +320,7 @@ def create_app(database=None, config=None):
         data = request.get_json()
         if not isinstance(data, dict) or set(data) != {'amount'} or type(data['amount']) is not int or not 0 < data['amount'] <= MAX_AMOUNT:
             return {'error': 'Invalid amount', 'code': 'invalid_amount'}, 400
-        result = None if goal_id > MAX_AMOUNT else move_goal_funds(current_app.config['DATABASE'], g.user['id'], goal_id, data['amount'], operation == 'deposit')
-        return result if result else ({'error': 'Goal not found', 'code': 'goal_not_found'}, 404)
+        return perform_idempotent(operation, goal_id, (data['amount'],))
 
     return app
 
