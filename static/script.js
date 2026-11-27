@@ -11,6 +11,9 @@ Object.assign(words.kk, {spendingByCategory:'Санаттар бойынша ш�
 Object.assign(words.en, {languageLabel:'Language', navigationLabel:'Main navigation', summaryLabel:'Account summary'});
 Object.assign(words.ru, {languageLabel:'Язык', navigationLabel:'Основная навигация', summaryLabel:'Сводка счёта'});
 Object.assign(words.kk, {languageLabel:'Тіл', navigationLabel:'Негізгі навигация', summaryLabel:'Шоттың қысқаша мазмұны'});
+Object.assign(words.en, {showPassword:'Show password', hidePassword:'Hide password', salary:'Salary', freelance:'Freelance', gift:'Gift', food:'Food', transport:'Transport', housing:'Housing', shopping:'Shopping', health:'Health'});
+Object.assign(words.ru, {showPassword:'Показать пароль', hidePassword:'Скрыть пароль', salary:'Зарплата', freelance:'Фриланс', gift:'Подарок', food:'Еда', transport:'Транспорт', housing:'Жильё', shopping:'Покупки', health:'Здоровье'});
+Object.assign(words.kk, {showPassword:'Құпиясөзді көрсету', hidePassword:'Құпиясөзді жасыру', salary:'Жалақы', freelance:'Фриланс', gift:'Сыйлық', food:'Азық-түлік', transport:'Көлік', housing:'Тұрғын үй', shopping:'Сатып алу', health:'Денсаулық'});
 Object.assign(words.en, {project:'PROJECT', personalAccount:'Personal account', navOverview:'Overview', navTransactions:'Transactions', navStatistics:'Statistics', searchPlaceholder:'Search transactions…', dashboardEyebrow:'FINANCIAL DASHBOARD', financialOverview:'Financial overview', overviewHelp:'Your income, expenses and recent transactions.', selectedPeriod:'Selected period', cashFlowEyebrow:'CASH FLOW', cashFlow:'Cash flow', week:'This week', month:'This month', year:'This year', netPeriod:'Net for selected period', spendingEyebrow:'SPENDING BREAKDOWN', totalExpenses:'Total expenses', recentEyebrow:'YOUR ACTIVITY', descriptionShort:'DESCRIPTION', categoryShort:'CATEGORY', amountShort:'AMOUNT', manageEyebrow:'MANAGE', quickActions:'Quick actions', quickHelp:'Keep your finances up to date.', recordIncome:'Record income', recordExpense:'Record expense', tengeNote:'All amounts in tenge ₸', newOperation:'TRANSACTION', noMatches:'No matching transactions.', noPeriodData:'No transactions in this period.', noDescription:'No description'});
 Object.assign(words.ru, {project:'ПРОЕКТ', personalAccount:'Личный аккаунт', navOverview:'Обзор', navTransactions:'Транзакции', navStatistics:'Статистика', searchPlaceholder:'Поиск транзакций…', dashboardEyebrow:'ФИНАНСОВАЯ ПАНЕЛЬ', financialOverview:'Обзор финансов', overviewHelp:'Ваши доходы, расходы и последние операции.', selectedPeriod:'Выбранный период', cashFlowEyebrow:'ДИНАМИКА СРЕДСТВ', cashFlow:'Движение средств', week:'Эта неделя', month:'Этот месяц', year:'Этот год', netPeriod:'Разница за выбранный период', spendingEyebrow:'СТРУКТУРА РАСХОДОВ', totalExpenses:'Всего расходов', recentEyebrow:'ВАШИ ОПЕРАЦИИ', descriptionShort:'ОПИСАНИЕ', categoryShort:'КАТЕГОРИЯ', amountShort:'СУММА', manageEyebrow:'УПРАВЛЕНИЕ', quickActions:'Быстрые действия', quickHelp:'Держите финансы под контролем.', recordIncome:'Записать поступление', recordExpense:'Записать трату', tengeNote:'Все суммы указаны в тенге ₸', newOperation:'ОПЕРАЦИЯ', noMatches:'Операции не найдены.', noPeriodData:'За этот период операций нет.', noDescription:'Без описания'});
 Object.assign(words.kk, {project:'ЖОБА', personalAccount:'Жеке тіркелгі', navOverview:'Шолу', navTransactions:'Операциялар', navStatistics:'Статистика', searchPlaceholder:'Операцияларды іздеу…', dashboardEyebrow:'ҚАРЖЫЛЫҚ ПАНЕЛЬ', financialOverview:'Қаржы шолуы', overviewHelp:'Кірістеріңіз, шығыстарыңыз және соңғы операциялар.', selectedPeriod:'Таңдалған кезең', cashFlowEyebrow:'ҚАРЖЫ ҚОЗҒАЛЫСЫ', cashFlow:'Қаражат қозғалысы', week:'Осы апта', month:'Осы ай', year:'Осы жыл', netPeriod:'Кезең ішіндегі айырма', spendingEyebrow:'ШЫҒЫСТАР ҚҰРЫЛЫМЫ', totalExpenses:'Барлық шығыс', recentEyebrow:'СІЗДІҢ ОПЕРАЦИЯЛАРЫҢЫЗ', descriptionShort:'СИПАТТАМА', categoryShort:'САНАТ', amountShort:'СОМА', manageEyebrow:'БАСҚАРУ', quickActions:'Жылдам әрекеттер', quickHelp:'Қаржыңызды қадағалаңыз.', recordIncome:'Кірісті тіркеу', recordExpense:'Шығысты тіркеу', tengeNote:'Барлық сома теңгемен ₸', newOperation:'ОПЕРАЦИЯ', noMatches:'Операциялар табылмады.', noPeriodData:'Бұл кезеңде операциялар жоқ.', noDescription:'Сипаттамасыз'});
@@ -66,10 +69,14 @@ function money(value) { const n = BigInt(value); return `${n < 0n ? '−' : ''}�
 function expire(error) { if (error.status !== 401) return false; items = []; document.querySelectorAll('#username,#profile,#balance-value,#income-value,#expense-value,#chart-total,#donut-total,#transaction-list,#chart,#chart-labels,#category-breakdown').forEach(el => { el.textContent = ''; }); sessionStorage.setItem('finance-notice','expired'); location.assign('/login'); return true; }
 
 if (page === 'login' || page === 'register') {
+ const passwordInput = $('password'), togglePassword = $('toggle-password');
+ function updatePasswordToggle() { const shown = passwordInput.type === 'text', key = shown ? 'hidePassword' : 'showPassword'; togglePassword.setAttribute('aria-pressed', String(shown)); togglePassword.dataset.i18nAria = key; togglePassword.setAttribute('aria-label', t(key)); togglePassword.querySelector('.sr-only').textContent = t(key); }
+ togglePassword.addEventListener('click', () => { passwordInput.type = passwordInput.type === 'password' ? 'text' : 'password'; updatePasswordToggle(); });
+ document.addEventListener('finance-language-change', updatePasswordToggle);
  const notice = sessionStorage.getItem('finance-notice');
  if (notice) { $('auth-error').textContent = t(notice); sessionStorage.removeItem('finance-notice'); }
  $('auth-form').addEventListener('submit', async e => {
-  e.preventDefault(); const form = e.currentTarget, error = $('auth-error'), button = form.querySelector('button'); error.textContent = '';
+  e.preventDefault(); const form = e.currentTarget, error = $('auth-error'), button = form.querySelector('.primary-button'); if (button.disabled) return; error.textContent = '';
   const username = form.elements.username.value.trim(), password = form.elements.password.value;
   if (!/^[a-zA-Z0-9_]{3,32}$/.test(username)) { error.textContent = t('invalidLogin'); return; }
   if (password.length > 256 || (page === 'register' && password.length < 12) || !password) { error.textContent = t('invalidPassword'); return; }
@@ -83,6 +90,10 @@ if (page === 'login' || page === 'register') {
 if (page === 'dashboard') {
  const status = $('dashboard-status'), list = $('transaction-list'), dialog = $('transaction-dialog'), form = $('transaction-form');
  let allBalance = null;
+ let submitting = false;
+ function updateCategorySuggestions() { const keys = form.elements.type.value === 'income' ? ['salary','freelance','gift'] : ['food','transport','housing','shopping','health']; const datalist = $('category-suggestions'); datalist.replaceChildren(); for (const key of keys) { const option = document.createElement('option'); option.value = t(key); datalist.append(option); } }
+ form.elements.type.addEventListener('change', updateCategorySuggestions);
+ document.addEventListener('finance-language-change', updateCategorySuggestions);
  document.addEventListener('finance-language-change',()=>{ renderTransactions(); if(allBalance!==null) renderPeriod(); });
  function button(key, action, id) { const el=document.createElement('button'); el.type='button'; el.className='row-button'; el.textContent=t(key); el.addEventListener('click',()=>action(id)); return el; }
  function renderTransactions() {
@@ -129,18 +140,19 @@ if (page === 'dashboard') {
   try { const [user,balance,transactions]=await Promise.all([api('/api/auth/me'),api('/api/balance'),api('/api/transactions')]); $('username').textContent=user.username; $('profile').textContent=user.username.slice(0,1).toUpperCase(); allBalance=balance.balance; items=transactions; renderTransactions(); renderPeriod(); status.textContent=''; }
   catch(err) { if(!expire(err)) status.textContent=message(err); }
  }
- function openForm(type,item=null) { editing=item; form.reset(); $('form-error').textContent=''; $('form-title').textContent=t(item?'editTransaction':'addTransaction'); form.elements.type.value=item?item.type:type; form.elements.amount.value=item?item.amount:''; form.elements.category.value=item?.category||''; form.elements.description.value=item?.description||''; form.elements.date.value=item?.date||dateToday(); dialog.showModal(); }
+ function openForm(type,item=null) { if (submitting) return; editing=item; form.reset(); $('form-error').textContent=''; $('form-title').textContent=t(item?'editTransaction':'addTransaction'); form.elements.type.value=item?item.type:type; updateCategorySuggestions(); form.elements.amount.value=item?item.amount:''; form.elements.category.value=item?.category||''; form.elements.description.value=item?.description||''; form.elements.date.value=item?.date||dateToday(); dialog.showModal(); }
  function editItem(id) { const item=items.find(x=>x.id===id); if(item) openForm(item.type,item); }
  async function deleteItem(id) { if(!confirm(t('deleteConfirm'))) return; try { await mutate(`/api/transactions/${encodeURIComponent(id)}`,'DELETE'); await refresh(); } catch(err) { if(!expire(err)) status.textContent=message(err); } }
  $('search-input').addEventListener('input',renderTransactions); $('period-select').addEventListener('change',renderPeriod);
  document.querySelectorAll('.nav-link').forEach(link=>link.addEventListener('click',()=>{ document.querySelectorAll('.nav-link').forEach(x=>x.classList.remove('active')); link.classList.add('active'); }));
  $('add-transaction').addEventListener('click',()=>openForm('expense')); $('add-income').addEventListener('click',()=>openForm('income')); $('add-expense').addEventListener('click',()=>openForm('expense')); $('close-dialog').addEventListener('click',()=>dialog.close());
- form.addEventListener('submit',async e=>{ e.preventDefault(); const error=$('form-error'), submit=form.querySelector('[type=submit]'); error.textContent=''; const amount=form.elements.amount.value.trim();
+ $('primary-income').addEventListener('click',()=>openForm('income')); $('primary-expense').addEventListener('click',()=>openForm('expense'));
+ form.addEventListener('submit',async e=>{ e.preventDefault(); if(submitting) return; const error=$('form-error'), submit=form.querySelector('[type=submit]'); error.textContent=''; const amount=form.elements.amount.value.trim();
   if(!/^\d+$/.test(amount)||BigInt(amount)<1n||BigInt(amount)>9223372036854775807n){error.textContent=t('invalidAmount');return;}
   if(!form.elements.date.value||!form.elements.date.checkValidity()){error.textContent=t('invalidDate');return;}
   const fields={type:form.elements.type.value,category:form.elements.category.value||null,description:form.elements.description.value||null,date:form.elements.date.value}; if(!form.reportValidity()) return;
-  const body=JSON.stringify(fields).slice(0,-1)+',"amount":'+BigInt(amount).toString()+'}'; setBusy(submit,true);
-  try { await mutate(editing?`/api/transactions/${encodeURIComponent(editing.id)}`:'/api/transactions',editing?'PUT':'POST',body); dialog.close(); await refresh(); } catch(err){if(!expire(err)) error.textContent=message(err);} finally{setBusy(submit,false);}
+  const body=JSON.stringify(fields).slice(0,-1)+',"amount":'+BigInt(amount).toString()+'}'; submitting=true; setBusy(submit,true);
+  try { await mutate(editing?`/api/transactions/${encodeURIComponent(editing.id)}`:'/api/transactions',editing?'PUT':'POST',body); dialog.close(); await refresh(); } catch(err){if(!expire(err)) error.textContent=message(err);} finally{submitting=false;setBusy(submit,false);}
  });
  $('logout').addEventListener('click',async e=>{setBusy(e.currentTarget,true);try{await mutate('/api/auth/logout','POST');csrf=null;items=[];location.assign('/login');}catch(err){if(!expire(err))status.textContent=message(err);}finally{setBusy(e.currentTarget,false);}});
  refresh();
