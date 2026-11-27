@@ -6,7 +6,7 @@ import re
 import secrets
 import sqlite3
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, current_app, g, request, session, render_template
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge, UnsupportedMediaType
@@ -16,7 +16,9 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from database import (add_transaction, check_database, create_user, database_path,
                       delete_transaction, find_user, get_balance, get_transactions,
                       get_session_user, update_transaction, create_session,
-                      reserve_login_attempt, revoke_session)
+                      reserve_login_attempt, revoke_session, FinancialConflict,
+                      list_goals, goal_summary, create_goal, change_goal, remove_goal,
+                      move_goal_funds)
 
 MAX_AMOUNT = 2**63 - 1
 MAX_CATEGORY_LENGTH = 100
@@ -110,13 +112,17 @@ def create_app(database=None, config=None):
         current_app.logger.exception('Database operation failed')
         return {'error': 'Database error'}, 503
 
+    @app.errorhandler(FinancialConflict)
+    def financial_conflict(error):
+        return {'error': error.code, 'code': error.code}, 409
+
     @app.before_request
     def protect_requests():
         g.user = None
         sid = session.get('session_id')
         if isinstance(sid, str) and len(sid) <= 128:
             g.user = get_session_user(current_app.config['DATABASE'], token_hash(sid), int(time.time()))
-        if request.path.startswith('/api/transactions') or request.path == '/api/balance' or request.path == '/api/auth/me':
+        if request.path.startswith(('/api/transactions', '/api/goals')) or request.path == '/api/balance' or request.path == '/api/auth/me':
             if g.user is None:
                 return {'error': 'Authentication required'}, 401
         if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
@@ -241,6 +247,63 @@ def create_app(database=None, config=None):
     @app.get('/api/balance')
     def balance():
         return get_balance(g.user['id'], current_app.config['DATABASE'])
+
+    def goal_fields(data):
+        if not isinstance(data, dict) or set(data) - {'title', 'target_amount', 'deadline'}:
+            return None
+        title, target, deadline = data.get('title'), data.get('target_amount'), data.get('deadline')
+        if not isinstance(title, str) or not title.strip() or len(title.strip()) > 100:
+            return None
+        if type(target) is not int or not 0 < target <= MAX_AMOUNT:
+            return None
+        if deadline is not None:
+            if not isinstance(deadline, str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', deadline):
+                return None
+            try:
+                datetime.strptime(deadline, '%Y-%m-%d')
+            except ValueError:
+                return None
+        return title.strip(), target, deadline
+
+    @app.get('/api/goals')
+    def goals():
+        return list_goals(current_app.config['DATABASE'], g.user['id'])
+
+    @app.get('/api/goals/summary')
+    def goals_summary():
+        return goal_summary(current_app.config['DATABASE'], g.user['id'])
+
+    @app.post('/api/goals')
+    def goals_create():
+        values = goal_fields(request.get_json())
+        if values is None:
+            return {'error': 'Invalid goal data', 'code': 'invalid_goal'}, 400
+        return create_goal(current_app.config['DATABASE'], g.user['id'], *values,
+                           datetime.now(timezone.utc).isoformat()), 201
+
+    @app.put('/api/goals/<int:goal_id>')
+    def goals_update(goal_id):
+        values = goal_fields(request.get_json())
+        if values is None:
+            return {'error': 'Invalid goal data', 'code': 'invalid_goal'}, 400
+        goal = None if goal_id > MAX_AMOUNT else change_goal(current_app.config['DATABASE'], g.user['id'], goal_id, *values)
+        return goal if goal else ({'error': 'Goal not found', 'code': 'goal_not_found'}, 404)
+
+    @app.delete('/api/goals/<int:goal_id>')
+    def goals_delete(goal_id):
+        if goal_id > MAX_AMOUNT or not remove_goal(current_app.config['DATABASE'], g.user['id'], goal_id):
+            return {'error': 'Goal not found', 'code': 'goal_not_found'}, 404
+        return '', 204
+
+    @app.post('/api/goals/<int:goal_id>/<operation>')
+    def goals_transfer(goal_id, operation):
+        if operation not in ('deposit', 'withdraw'):
+            return {'error': 'Not found', 'code': 'not_found'}, 404
+        data = request.get_json()
+        if not isinstance(data, dict) or set(data) != {'amount'} or type(data['amount']) is not int or not 0 < data['amount'] <= MAX_AMOUNT:
+            return {'error': 'Invalid amount', 'code': 'invalid_amount'}, 400
+        result = None if goal_id > MAX_AMOUNT else move_goal_funds(current_app.config['DATABASE'], g.user['id'], goal_id, data['amount'], operation == 'deposit')
+        return result if result else ({'error': 'Goal not found', 'code': 'goal_not_found'}, 404)
 
     return app
 

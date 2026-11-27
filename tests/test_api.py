@@ -7,10 +7,11 @@ import pytest
 
 @pytest.fixture
 def raw_client(tmp_path, monkeypatch):
-    from database import migrate_database, migrate_security_v2
+    from database import migrate_database, migrate_security_v2, migrate_goals_v3
     db = tmp_path / 'test.db'
     migrate_database(db)
     migrate_security_v2(db)
+    migrate_goals_v3(db)
     monkeypatch.setenv('FINANCIAL_DATABASE', str(db))
     monkeypatch.setenv('FINANCIAL_SECRET_KEY', 'test-only-secret-key-32-characters-long')
     sys.modules.pop('app', None)
@@ -226,13 +227,14 @@ def test_registration_login_and_password_hash(raw_client):
 
 
 def test_legacy_rows_hidden_and_migration_rollback(tmp_path, monkeypatch):
-    from database import migrate_database, migrate_security_v2
+    from database import migrate_database, migrate_security_v2, migrate_goals_v3
     db = tmp_path / 'legacy.db'
     with sqlite3.connect(db) as c:
         c.execute('CREATE TABLE transactions (id INTEGER PRIMARY KEY, type TEXT, amount INTEGER, category TEXT, description TEXT, date TEXT)')
         c.execute("INSERT INTO transactions VALUES (7, 'income', 99, NULL, NULL, '2026-11-20')")
     migrate_database(db)
     migrate_security_v2(db)
+    migrate_goals_v3(db)
     monkeypatch.setenv('FINANCIAL_DATABASE', str(db))
     monkeypatch.setenv('FINANCIAL_SECRET_KEY', 'test-only-secret-key-32-characters-long')
     sys.modules.pop('app', None)
@@ -258,11 +260,12 @@ def test_legacy_rows_hidden_and_migration_rollback(tmp_path, monkeypatch):
 
 
 def test_legacy_assignment_requires_matching_user_and_count(tmp_path):
-    from database import migrate_database, migrate_security_v2
+    from database import migrate_database, migrate_security_v2, migrate_goals_v3
     from claim_legacy import claim_unassigned
     db = tmp_path / 'legacy.db'
     migrate_database(db)
     migrate_security_v2(db)
+    migrate_goals_v3(db)
     with sqlite3.connect(db) as c:
         c.execute("INSERT INTO users (username, password_hash) VALUES ('alice', 'hash')")
         c.execute("INSERT INTO transactions (type, amount, date) VALUES ('income', 42, '2026-11-19')")
@@ -489,3 +492,153 @@ def test_dashboard_transaction_entry_controls(raw_client):
     assert 'id="primary-income"' in html and 'id="primary-expense"' in html
     assert 'list="category-suggestions"' in html and '<datalist id="category-suggestions">' in html
     assert 'name="amount" inputmode="numeric"' in html
+
+
+def test_goals_lifecycle_and_reserve_invariants(client):
+    data = {'type': 'income', 'amount': 100, 'date': '2026-11-20'}
+    client.post('/api/transactions', json=data)
+    response = client.post('/api/goals', json={'title':'Laptop', 'target_amount':80, 'deadline':'2020-01-01'})
+    assert response.status_code == 201
+    goal = response.get_json(); goal_id = goal['id']; assert goal['saved_amount'] == 0
+    url = f'/api/goals/{goal_id}'
+    assert client.post(url + '/deposit', json={'amount':80}).status_code == 200
+    assert client.get('/api/goals/summary').get_json() == {'total_balance':100,'reserved_savings':80,'available_balance':20}
+    assert client.get('/api/balance').get_json()['balance'] == 100
+    assert len(client.get('/api/transactions').get_json()) == 1
+    assert client.post('/api/transactions',json={**data,'type':'expense','amount':21}).get_json()['code'] == 'reserved_funds_conflict'
+    assert client.delete('/api/transactions/1').status_code == 409
+    assert client.put('/api/transactions/1',json={**data,'amount':79}).status_code == 409
+    assert client.put(url,json={'title':'Laptop','target_amount':79}).get_json()['code'] == 'target_below_saved'
+    assert client.post(url+'/withdraw',json={'amount':81}).get_json()['code'] == 'insufficient_goal_funds'
+    assert client.post(url+'/withdraw',json={'amount':80}).status_code == 200
+    assert client.post('/api/transactions',json={**data,'type':'expense','amount':110}).status_code == 201
+    assert client.get('/api/goals/summary').get_json()['available_balance'] == -10
+    assert client.post(url+'/deposit',json={'amount':1}).get_json()['code'] == 'insufficient_available'
+    assert client.delete(url).status_code == 204
+
+
+def test_goal_delete_releases_and_target_limit(client):
+    client.post('/api/transactions',json={'type':'income','amount':100,'date':'2026-11-20'})
+    gid=client.post('/api/goals',json={'title':'A','target_amount':20}).get_json()['id']
+    assert client.post(f'/api/goals/{gid}/deposit',json={'amount':21}).get_json()['code'] == 'exceeds_goal_target'
+    client.post(f'/api/goals/{gid}/deposit',json={'amount':20})
+    assert client.delete(f'/api/goals/{gid}').status_code == 204
+    assert client.get('/api/goals/summary').get_json()['available_balance'] == 100
+
+
+@pytest.mark.parametrize('goal', [None, [], {}, {'title':' ','target_amount':1}, {'title':'x','target_amount':True}, {'title':'x','target_amount':2**63}, {'title':'x','target_amount':1,'deadline':'2026-02-30'}, {'title':'x','target_amount':1,'saved_amount':1}, {'title':'x','target_amount':1,'user_id':2}])
+def test_goal_invalid(client, goal):
+    response = client.post('/api/goals', data='null', content_type='application/json') if goal is None else client.post('/api/goals', json=goal)
+    assert response.status_code == 400
+
+
+def test_goals_auth_csrf_and_ownership(raw_client):
+    app=raw_client.application; alice=AuthenticatedClient(raw_client); bob=AuthenticatedClient(app.test_client())
+    assert raw_client.get('/api/goals').status_code == 401
+    for c,name in ((alice,'alice'),(bob,'bobby')):
+        creds={'username':name,'password':'password-long-enough'}; c.post('/api/auth/register',json=creds); c.post('/api/auth/login',json=creds)
+    gid=alice.post('/api/goals',json={'title':'Private','target_amount':1}).get_json()['id']
+    assert raw_client.post('/api/goals',json={'title':'x','target_amount':1}).status_code == 403
+    assert bob.get('/api/goals').get_json() == []
+    assert bob.put(f'/api/goals/{gid}',json={'title':'x','target_amount':1}).status_code == 404
+    assert bob.delete(f'/api/goals/{gid}').status_code == 404
+    assert bob.post(f'/api/goals/{gid}/withdraw',json={'amount':1}).status_code == 404
+
+
+def test_concurrent_goal_deposits_and_transaction_are_atomic(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from database import migrate_database,migrate_security_v2,migrate_goals_v3,create_user,add_transaction,create_goal,move_goal_funds,FinancialConflict,goal_summary
+    db=tmp_path/'race.db'; migrate_database(db); migrate_security_v2(db); migrate_goals_v3(db)
+    create_user('alice','hash',db); add_transaction(1,'income',100,None,None,'2026-01-01',db)
+    first=create_goal(db,1,'A',100,None,'2026-01-01'); second=create_goal(db,1,'B',100,None,'2026-01-01')
+    def deposit(gid):
+        try: move_goal_funds(db,1,gid,70,True); return 'ok'
+        except FinancialConflict: return 'conflict'
+    with ThreadPoolExecutor(max_workers=2) as pool: results=list(pool.map(deposit,[first['id'],second['id']]))
+    assert sorted(results)==['conflict','ok']
+    assert goal_summary(db,1)=={'total_balance':100,'reserved_savings':70,'available_balance':30}
+    def competing(kind):
+        try:
+            if kind=='deposit': move_goal_funds(db,1,second['id'] if results[1]=='conflict' else first['id'],25,True)
+            else: add_transaction(1,'expense',25,None,None,'2026-01-01',db)
+            return 'ok'
+        except FinancialConflict: return 'conflict'
+    with ThreadPoolExecutor(max_workers=2) as pool: outcomes=list(pool.map(competing,['deposit','expense']))
+    assert sorted(outcomes)==['conflict','ok']
+    state=goal_summary(db,1); assert state['available_balance']>=0
+
+
+def test_v3_migration_preserves_and_rolls_back(tmp_path):
+    from database import migrate_database,migrate_security_v2,migrate_goals_v3
+    db=tmp_path/'old.db'; migrate_database(db); migrate_security_v2(db)
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT INTO users (username,password_hash) VALUES ('alice','hash')")
+        c.execute("INSERT INTO transactions (type,amount,date,user_id) VALUES ('income',42,'2026-01-01',1)")
+    migrate_goals_v3(db); migrate_goals_v3(db)
+    with sqlite3.connect(db) as c:
+        assert c.execute('PRAGMA user_version').fetchone()[0]==3
+        assert c.execute('SELECT amount,user_id FROM transactions').fetchall()==[(42,1)]
+        assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok'
+    bad=tmp_path/'bad.db'; migrate_database(bad); migrate_security_v2(bad)
+    with sqlite3.connect(bad) as c: c.execute('CREATE INDEX idx_goals_user_id ON transactions(user_id)')
+    with pytest.raises(sqlite3.Error): migrate_goals_v3(bad)
+    with sqlite3.connect(bad) as c:
+        assert c.execute('PRAGMA user_version').fetchone()[0]==2
+        assert c.execute("SELECT name FROM sqlite_master WHERE name='goals'").fetchone() is None
+
+
+def test_goal_large_amount_and_total_over_sqlite_integer(client):
+    maximum=2**63-1
+    income={'type':'income','amount':maximum,'date':'2026-01-01'}
+    assert client.post('/api/transactions',json=income).status_code==201
+    assert client.post('/api/transactions',json=income).status_code==201
+    goal=client.post('/api/goals',json={'title':'Large','target_amount':maximum}).get_json()
+    assert client.post(f"/api/goals/{goal['id']}/deposit",json={'amount':maximum}).status_code==200
+    assert client.get('/api/goals/summary').get_json()=={'total_balance':maximum*2,'reserved_savings':maximum,'available_balance':maximum}
+
+
+def test_claim_legacy_cannot_break_reservation(tmp_path):
+    from database import migrate_database,migrate_security_v2,migrate_goals_v3,add_transaction,create_goal,move_goal_funds,FinancialConflict
+    from claim_legacy import claim_unassigned
+    db=tmp_path/'claim.db'; migrate_database(db); migrate_security_v2(db); migrate_goals_v3(db)
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT INTO users (username,password_hash) VALUES ('alice','hash')")
+        c.execute("INSERT INTO transactions (type,amount,date) VALUES ('expense',30,'2026-01-01')")
+    add_transaction(1,'income',100,None,None,'2026-01-01',db)
+    gid=create_goal(db,1,'A',90,None,'2026-01-01')['id'];move_goal_funds(db,1,gid,90,True)
+    with pytest.raises(FinancialConflict): claim_unassigned(db,1,1)
+    with sqlite3.connect(db) as c:
+        assert c.execute('SELECT user_id FROM transactions WHERE type = ?',('expense',)).fetchone()[0] is None
+
+
+def test_locked_database_returns_503_without_writes(client, raw_client):
+    db=raw_client.application.config['DATABASE']
+    lock=sqlite3.connect(db);lock.execute('BEGIN IMMEDIATE')
+    try:
+        response=client.post('/api/goals',json={'title':'Locked','target_amount':1})
+        assert response.status_code==503
+    finally:
+        lock.rollback();lock.close()
+    assert client.get('/api/goals').get_json()==[]
+
+
+def test_goal_ui_elements(raw_client):
+    html=raw_client.get('/dashboard').get_data(as_text=True)
+    for field in ('goal-add','goal-list','goal-form','transfer-form','reserved-value','available-value'):
+        assert f'id="{field}"' in html
+
+
+def test_goal_transfer_invalid_amounts_and_unknown_ids(client):
+    gid=client.post('/api/goals',json={'title':'Target','target_amount':1}).get_json()['id']
+    for value in (0,-1,True,1.5,2**63,'1'):
+        response=client.post(f'/api/goals/{gid}/deposit',json={'amount':value})
+        assert response.status_code==400 and response.get_json()['code']=='invalid_amount'
+    assert client.delete(f'/api/goals/{2**63}').status_code==404
+    assert client.post(f'/api/goals/{2**63}/deposit',json={'amount':1}).status_code==404
+
+
+def test_goal_invalid_body_cannot_change_saved_amount(client):
+    gid=client.post('/api/goals',json={'title':'Target','target_amount':10}).get_json()['id']
+    response=client.put(f'/api/goals/{gid}',json={'title':'Target','target_amount':10,'saved_amount':8})
+    assert response.status_code==400
+    assert client.get('/api/goals').get_json()[0]['saved_amount']==0
