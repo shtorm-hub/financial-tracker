@@ -474,3 +474,18 @@ def test_redesign_data_contract_preserves_negative_large_balance(client):
     assert client.get('/api/balance').get_json()['balance'] == -maximum
     entry = client.get('/api/transactions').get_json()[0]
     assert entry['category'] == hostile and entry['description'] == 'search me'
+
+
+def test_password_toggle_available_and_hidden_on_auth_pages(raw_client):
+    for path in ('/login', '/register'):
+        html = raw_client.get(path).get_data(as_text=True)
+        assert 'id="password" name="password" type="password"' in html
+        assert 'id="toggle-password"' in html and 'aria-controls="password"' in html
+        assert 'aria-pressed="false"' in html
+
+
+def test_dashboard_transaction_entry_controls(raw_client):
+    html = raw_client.get('/dashboard').get_data(as_text=True)
+    assert 'id="primary-income"' in html and 'id="primary-expense"' in html
+    assert 'list="category-suggestions"' in html and '<datalist id="category-suggestions">' in html
+    assert 'name="amount" inputmode="numeric"' in html
