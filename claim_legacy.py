@@ -1,7 +1,8 @@
 import argparse
+import sqlite3
 from contextlib import closing
 
-from database import check_database, connect
+from database import FinancialConflict, assert_reserves, check_database, connect
 
 
 def claim_unassigned(path, user_id, expected_count):
@@ -15,6 +16,7 @@ def claim_unassigned(path, user_id, expected_count):
             if count != expected_count:
                 raise ValueError('Unassigned transaction count differs from the confirmed count')
             connection.execute('UPDATE transactions SET user_id = ? WHERE user_id IS NULL', (user_id,))
+            assert_reserves(connection, user_id)
             connection.commit()
             return count
         except Exception:
@@ -30,4 +32,8 @@ if __name__ == '__main__':
                         help='Count reviewed beforehand; the operation fails if it differs')
     parser.add_argument('--confirm', action='store_true', required=True)
     args = parser.parse_args()
-    print(f'Assigned {claim_unassigned(args.database, args.user_id, args.expected_count)} transactions.')
+    try:
+        count = claim_unassigned(args.database, args.user_id, args.expected_count)
+    except (FinancialConflict, sqlite3.Error, ValueError, RuntimeError) as error:
+        parser.exit(1, f'Assignment failed; no changes committed: {error}\n')
+    print(f'Assigned {count} transactions.')

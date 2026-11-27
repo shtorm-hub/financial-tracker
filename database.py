@@ -1,10 +1,10 @@
 import os
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 DEFAULT_DATABASE = Path(__file__).resolve().parent / 'financial.db'
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def database_path(path=None):
@@ -172,25 +172,57 @@ def get_user(user_id, path):
         return connection.execute('SELECT id, username FROM users WHERE id = ?', (user_id,)).fetchone()
 
 
+class FinancialConflict(Exception):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+@contextmanager
+def write_transaction(path):
+    with closing(connect(path)) as connection:
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+
+def snapshot(connection, user_id):
+    total = sum(amount if kind == 'income' else -amount for kind, amount in
+                connection.execute('SELECT type, amount FROM transactions WHERE user_id = ?', (user_id,)))
+    reserved = sum(row[0] for row in connection.execute('SELECT saved_amount FROM goals WHERE user_id = ?', (user_id,)))
+    return {'total_balance': total, 'reserved_savings': reserved, 'available_balance': total - reserved}
+
+
+def assert_reserves(connection, user_id):
+    state = snapshot(connection, user_id)
+    if state['reserved_savings'] > 0 and state['available_balance'] < 0:
+        raise FinancialConflict('reserved_funds_conflict')
+
+
 def add_transaction(user_id, transaction_type, amount, category, description, date, path):
-    with closing(connect(path)) as connection, connection:
-        connection.execute('''INSERT INTO transactions (user_id, type, amount, category, description, date)
-                              VALUES (?, ?, ?, ?, ?, ?)''',
+    with write_transaction(path) as connection:
+        connection.execute('INSERT INTO transactions (user_id, type, amount, category, description, date) VALUES (?, ?, ?, ?, ?, ?)',
                            (user_id, transaction_type, amount, category, description, date))
+        assert_reserves(connection, user_id)
 
 
 def update_transaction(user_id, transaction_id, transaction_type, amount, category, description, date, path):
-    with closing(connect(path)) as connection, connection:
-        cursor = connection.execute('''UPDATE transactions SET type = ?, amount = ?, category = ?,
-            description = ?, date = ? WHERE id = ? AND user_id = ?''',
-            (transaction_type, amount, category, description, date, transaction_id, user_id))
+    with write_transaction(path) as connection:
+        cursor = connection.execute('UPDATE transactions SET type = ?, amount = ?, category = ?, description = ?, date = ? WHERE id = ? AND user_id = ?',
+                                    (transaction_type, amount, category, description, date, transaction_id, user_id))
+        assert_reserves(connection, user_id)
         return cursor.rowcount > 0
 
 
 def delete_transaction(user_id, transaction_id, path):
-    with closing(connect(path)) as connection, connection:
-        return connection.execute('DELETE FROM transactions WHERE id = ? AND user_id = ?',
-                                  (transaction_id, user_id)).rowcount > 0
+    with write_transaction(path) as connection:
+        cursor = connection.execute('DELETE FROM transactions WHERE id = ? AND user_id = ?', (transaction_id, user_id))
+        assert_reserves(connection, user_id)
+        return cursor.rowcount > 0
 
 
 def get_transactions(user_id, path):
@@ -205,3 +237,84 @@ def get_balance(user_id, path):
     income = sum(t['amount'] for t in transactions if t['type'] == 'income')
     expense = sum(t['amount'] for t in transactions if t['type'] == 'expense')
     return {'income': income, 'expense': expense, 'balance': income - expense}
+
+
+def migrate_goals_v3(path):
+    with write_transaction(path) as connection:
+        version = connection.execute('PRAGMA user_version').fetchone()[0]
+        if version == 3:
+            return
+        if version != 2:
+            raise RuntimeError('Goals migration requires schema version 2')
+        connection.execute("""CREATE TABLE goals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            title TEXT NOT NULL CHECK (length(trim(title)) > 0 AND length(title) <= 100),
+            target_amount INTEGER NOT NULL CHECK (target_amount > 0),
+            saved_amount INTEGER NOT NULL DEFAULT 0 CHECK (saved_amount >= 0 AND saved_amount <= target_amount),
+            deadline TEXT, created_at TEXT NOT NULL
+        )""")
+        connection.execute('CREATE INDEX idx_goals_user_id ON goals(user_id)')
+        if connection.execute('PRAGMA foreign_key_check').fetchone():
+            raise RuntimeError('Foreign key check failed')
+        connection.execute('PRAGMA user_version = 3')
+
+
+def goal_row(connection, user_id, goal_id):
+    connection.row_factory = sqlite3.Row
+    row = connection.execute('SELECT id, title, target_amount, saved_amount, deadline, created_at FROM goals WHERE id = ? AND user_id = ?', (goal_id, user_id)).fetchone()
+    return dict(row) if row else None
+
+
+def list_goals(path, user_id):
+    with closing(connect(path)) as connection:
+        connection.row_factory = sqlite3.Row
+        return [dict(row) for row in connection.execute('SELECT id, title, target_amount, saved_amount, deadline, created_at FROM goals WHERE user_id = ? ORDER BY id', (user_id,))]
+
+
+def goal_summary(path, user_id):
+    with closing(connect(path)) as connection:
+        connection.execute('BEGIN')
+        return snapshot(connection, user_id)
+
+
+def create_goal(path, user_id, title, target, deadline, created_at):
+    with write_transaction(path) as connection:
+        cur = connection.execute('INSERT INTO goals (user_id, title, target_amount, deadline, created_at) VALUES (?, ?, ?, ?, ?)', (user_id, title, target, deadline, created_at))
+        return goal_row(connection, user_id, cur.lastrowid)
+
+
+def change_goal(path, user_id, goal_id, title, target, deadline):
+    with write_transaction(path) as connection:
+        goal = goal_row(connection, user_id, goal_id)
+        if goal is None:
+            return None
+        if target < goal['saved_amount']:
+            raise FinancialConflict('target_below_saved')
+        connection.execute('UPDATE goals SET title = ?, target_amount = ?, deadline = ? WHERE id = ? AND user_id = ?', (title, target, deadline, goal_id, user_id))
+        return goal_row(connection, user_id, goal_id)
+
+
+def remove_goal(path, user_id, goal_id):
+    with write_transaction(path) as connection:
+        return connection.execute('DELETE FROM goals WHERE id = ? AND user_id = ?', (goal_id, user_id)).rowcount > 0
+
+
+def move_goal_funds(path, user_id, goal_id, amount, deposit):
+    with write_transaction(path) as connection:
+        goal = goal_row(connection, user_id, goal_id)
+        if goal is None:
+            return None
+        state = snapshot(connection, user_id)
+        if deposit:
+            if amount > state['available_balance']:
+                raise FinancialConflict('insufficient_available')
+            if amount > goal['target_amount'] - goal['saved_amount']:
+                raise FinancialConflict('exceeds_goal_target')
+            new_saved = goal['saved_amount'] + amount
+        else:
+            if amount > goal['saved_amount']:
+                raise FinancialConflict('insufficient_goal_funds')
+            new_saved = goal['saved_amount'] - amount
+        connection.execute('UPDATE goals SET saved_amount = ? WHERE id = ? AND user_id = ?', (new_saved, goal_id, user_id))
+        return {'goal': goal_row(connection, user_id, goal_id), 'summary': snapshot(connection, user_id)}
