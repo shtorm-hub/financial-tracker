@@ -20,6 +20,9 @@ Object.assign(words.kk, {project:'ЖОБА', personalAccount:'Жеке тірк�
 Object.assign(words.en,{goals:'Savings goals',goalsEyebrow:'YOUR SAVINGS',reserved:'Reserved savings',available:'Available balance',goalCreate:'Create goal',goalEdit:'Edit goal',goalTitle:'Goal title',goalTarget:'Target amount (₸)',goalDeadline:'Deadline (optional)',goalSaved:'Saved',goalRemaining:'Remaining',goalComplete:'Completed',goalInProgress:'In progress',goalEmpty:'No goals yet. Create your first savings goal.',goalDeposit:'Deposit',goalWithdraw:'Withdraw',goalDelete:'Delete this goal? This will release {amount} in reserved savings.',goalInvalid:'Enter a title and a valid positive target amount.',insufficient_available:'Not enough available funds.',exceeds_goal_target:'This exceeds the remaining goal amount.',insufficient_goal_funds:'This exceeds the saved amount.',target_below_saved:'Target cannot be less than the saved amount.',reserved_funds_conflict:'This would reduce your balance below reserved savings. Withdraw from a goal first.'});
 Object.assign(words.ru,{goals:'Финансовые цели',goalsEyebrow:'ВАШИ НАКОПЛЕНИЯ',reserved:'Зарезервировано',available:'Доступно',goalCreate:'Создать цель',goalEdit:'Изменить цель',goalTitle:'Название цели',goalTarget:'Целевая сумма (₸)',goalDeadline:'Срок (необязательно)',goalSaved:'Накоплено',goalRemaining:'Осталось',goalComplete:'Цель достигнута',goalInProgress:'В процессе',goalEmpty:'Целей пока нет. Создайте первую.',goalDeposit:'Пополнить',goalWithdraw:'Снять',goalDelete:'Удалить цель? Будет освобождено {amount} накоплений.',goalInvalid:'Укажите название и корректную положительную сумму цели.',insufficient_available:'Недостаточно доступных средств.',exceeds_goal_target:'Сумма превышает остаток цели.',insufficient_goal_funds:'Сумма превышает накопления цели.',target_below_saved:'Цель не может быть меньше накопленной суммы.',reserved_funds_conflict:'Баланс станет меньше резерва. Сначала снимите средства с цели.'});
 Object.assign(words.kk,{goals:'Қаржылық мақсаттар',goalsEyebrow:'ЖИНАҚТАРЫҢЫЗ',reserved:'Резервтегі жинақ',available:'Қолжетімді қаражат',goalCreate:'Мақсат құру',goalEdit:'Мақсатты өзгерту',goalTitle:'Мақсат атауы',goalTarget:'Мақсат сомасы (₸)',goalDeadline:'Мерзімі (міндетті емес)',goalSaved:'Жиналды',goalRemaining:'Қалды',goalComplete:'Мақсат орындалды',goalInProgress:'Орындалуда',goalEmpty:'Мақсаттар жоқ. Алғашқы мақсатты құрыңыз.',goalDeposit:'Толықтыру',goalWithdraw:'Шешіп алу',goalDelete:'Мақсат жойылсын ба? Резервтен {amount} босатылады.',goalInvalid:'Атауы мен дұрыс оң соманы енгізіңіз.',insufficient_available:'Қолжетімді қаражат жеткіліксіз.',exceeds_goal_target:'Сома мақсат қалдығынан асады.',insufficient_goal_funds:'Сома жинақтан асады.',target_below_saved:'Мақсат сомасы жинақтан кем болмауы керек.',reserved_funds_conflict:'Баланс резервтен аз болады. Алдымен мақсаттан қаражат шешіңіз.'});
+Object.assign(words.en,{idempotency_key_conflict:'This operation key was already used for different data.',pendingOperation:'A previous operation may have succeeded. Retry that exact operation before making another.',pendingExpired:'This operation is older than 30 days. Check your finances before taking further action.',pendingRetry:'An operation has an uncertain result. Retry the same operation now?',pendingStorage:'Cannot safely store the operation for retry. Check browser storage settings.',pendingUncertain:'The result is uncertain. Retry the same operation; do not create another.',savedRefreshFailed:'Operation saved, but current data could not be refreshed. Reload the dashboard.'});
+Object.assign(words.ru,{idempotency_key_conflict:'Этот ключ операции уже использован для других данных.',pendingOperation:'Предыдущая операция могла выполниться. Сначала повторите её с исходными данными.',pendingExpired:'Прошло более 30 дней. Проверьте финансы перед дальнейшими действиями.',pendingRetry:'Результат операции неизвестен. Повторить ту же операцию сейчас?',pendingStorage:'Не удалось безопасно сохранить операцию для повтора. Проверьте настройки хранилища.',pendingUncertain:'Результат неизвестен. Повторите ту же операцию, не создавая новую.',savedRefreshFailed:'Операция сохранена, но обновить данные не удалось. Обновите страницу.'});
+Object.assign(words.kk,{idempotency_key_conflict:'Бұл операция кілті басқа деректер үшін қолданылған.',pendingOperation:'Алдыңғы операция орындалған болуы мүмкін. Алдымен сол операцияны қайталаңыз.',pendingExpired:'30 күннен асты. Әрі қарай әрекет етпес бұрын қаржыңызды тексеріңіз.',pendingRetry:'Операция нәтижесі белгісіз. Сол операцияны қазір қайталау керек пе?',pendingStorage:'Қайталау үшін операцияны сақтау мүмкін болмады. Браузер баптауларын тексеріңіз.',pendingUncertain:'Нәтиже белгісіз. Жаңа операция құрмай, сол операцияны қайталаңыз.',savedRefreshFailed:'Операция сақталды, бірақ деректер жаңартылмады. Бетті жаңартыңыз.'});
 let language = localStorage.getItem('finance-language') || 'en';
 if (!words[language]) language = 'en';
 const t = key => words[language][key] || words.en[key] || key;
@@ -51,10 +54,11 @@ async function api(path, options = {}) {
  return data;
 }
 async function getCsrf() { csrf = (await api('/api/auth/csrf')).csrf_token; return csrf; }
-async function mutate(path, method, body) {
+async function mutate(path, method, body, idempotencyKey = null) {
  if (!csrf) await getCsrf();
  const headers = {'X-CSRF-Token':csrf};
  if (body !== undefined) headers['Content-Type'] = 'application/json';
+ if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
  return api(path, {method, headers, ...(body !== undefined ? {body} : {})});
 }
 function message(error, auth = false) {
@@ -93,7 +97,34 @@ if (page === 'login' || page === 'register') {
 
 if (page === 'dashboard') {
  const status = $('dashboard-status'), list = $('transaction-list'), dialog = $('transaction-dialog'), form = $('transaction-form');
- let allBalance = null, goalItems = [];
+ let allBalance = null, goalItems = [], currentUserId = null, pendingOffered = false;
+ const pendingName = () => `financial-pending-${currentUserId}`;
+ function getPending() { return JSON.parse(sessionStorage.getItem(pendingName()) || 'null'); }
+ async function financialMutation(path, body) {
+  if (!currentUserId) throw new Error(t('pendingStorage'));
+  let pending;
+  try { pending = getPending(); } catch { throw new Error(t('pendingStorage')); }
+  if (pending && (pending.path !== path || pending.body !== body)) throw new Error(t('pendingOperation'));
+  if (pending && Date.now() - pending.created >= 30 * 86400000) throw new Error(t('pendingExpired'));
+  if (!pending) {
+   pending = {path, body, key:crypto.randomUUID(), created:Date.now()};
+   try { sessionStorage.setItem(pendingName(), JSON.stringify(pending)); } catch { throw new Error(t('pendingStorage')); }
+  }
+  try {
+   await mutate(pending.path, 'POST', pending.body, pending.key);
+   sessionStorage.removeItem(pendingName());
+  } catch (err) {
+   if (err.status >= 400 && err.status < 500 && err.status !== 408 && err.status !== 429 && err.message !== 'idempotency_key_conflict') sessionStorage.removeItem(pendingName());
+   if (err.status === 0 || err.status >= 500 || err.status === 408 || !err.status) throw new Error(t('pendingUncertain'));
+   throw err;
+  }
+ }
+ async function retryPending() {
+  let pending; try { pending=getPending(); } catch { status.textContent=t('pendingStorage'); return; }
+  if (!pending) return;
+  if (Date.now()-pending.created >= 30*86400000) { status.textContent=t('pendingExpired'); return; }
+  if (confirm(t('pendingRetry'))) { try { await financialMutation(pending.path,pending.body); await refresh(true); } catch(err) { if (!expire(err)) status.textContent=err.status === undefined ? err.message : message(err); } }
+ }
  document.addEventListener('finance-language-change',()=>renderGoals());
  let submitting = false;
  function updateCategorySuggestions() { const keys = form.elements.type.value === 'income' ? ['salary','freelance','gift'] : ['food','transport','housing','shopping','health']; const datalist = $('category-suggestions'); datalist.replaceChildren(); for (const key of keys) { const option = document.createElement('option'); option.value = t(key); datalist.append(option); } }
@@ -140,10 +171,10 @@ if (page === 'dashboard') {
   const plot=document.createElement('div'); plot.className='plot'; const grid=document.createElement('div'); grid.className='grid-lines'; for(let i=0;i<5;i++) grid.append(document.createElement('i')); plot.append(grid,svg); chart.append(plot); chart.setAttribute('aria-label',`${t('cashFlow')}: ${t('income')} ${money(income)}, ${t('expenses')} ${money(expense)}`);
   const first=document.createElement('span'),last=document.createElement('span'); first.textContent=points[0][0]; last.textContent=points.length>1?points[points.length-1][0]:''; labels.append(first,last);
  }
- async function refresh() {
+ async function refresh(afterSave = false) {
   status.textContent=t('loading');
-  try { const [user,summary,transactions,goals]=await Promise.all([api('/api/auth/me'),api('/api/goals/summary'),api('/api/transactions'),api('/api/goals')]); $('username').textContent=user.username; $('profile').textContent=user.username.slice(0,1).toUpperCase(); allBalance=summary.total_balance; $('reserved-value').textContent=money(summary.reserved_savings); $('available-value').textContent=money(summary.available_balance); items=transactions; goalItems=goals; renderTransactions(); renderPeriod(); renderGoals(); status.textContent=''; }
-  catch(err) { if(!expire(err)) status.textContent=message(err); }
+  try { const [user,summary,transactions,goals]=await Promise.all([api('/api/auth/me'),api('/api/goals/summary'),api('/api/transactions'),api('/api/goals')]); currentUserId=user.id; $('username').textContent=user.username; $('profile').textContent=user.username.slice(0,1).toUpperCase(); allBalance=summary.total_balance; $('reserved-value').textContent=money(summary.reserved_savings); $('available-value').textContent=money(summary.available_balance); items=transactions; goalItems=goals; renderTransactions(); renderPeriod(); renderGoals(); status.textContent=''; if (!pendingOffered) { pendingOffered=true; await retryPending(); } }
+  catch(err) { if(!expire(err)) status.textContent=afterSave ? t('savedRefreshFailed') : message(err); }
  }
  function openForm(type,item=null) { if (submitting) return; editing=item; form.reset(); $('form-error').textContent=''; $('form-title').textContent=t(item?'editTransaction':'addTransaction'); form.elements.type.value=item?item.type:type; updateCategorySuggestions(); form.elements.amount.value=item?item.amount:''; form.elements.category.value=item?.category||''; form.elements.description.value=item?.description||''; form.elements.date.value=item?.date||dateToday(); dialog.showModal(); }
  function editItem(id) { const item=items.find(x=>x.id===id); if(item) openForm(item.type,item); }
@@ -158,7 +189,7 @@ if (page === 'dashboard') {
  async function deleteGoal(goal){if(goalBusy||!confirm(t('goalDelete').replace('{amount}',money(goal.saved_amount))))return;goalBusy=true;try{await mutate(`/api/goals/${encodeURIComponent(goal.id)}`,'DELETE');await refresh();}catch(err){if(!expire(err))$('goals-status').textContent=message(err);}finally{goalBusy=false;}}
  function validInteger(value){return /^\d+$/.test(value)&&BigInt(value)>0n&&BigInt(value)<=9223372036854775807n;}
  goalForm.addEventListener('submit',async e=>{e.preventDefault();if(goalBusy)return;const title=goalForm.elements.title.value.trim(), target=goalForm.elements.target_amount.value.trim(), deadline=goalForm.elements.deadline.value, error=$('goal-error'), submit=goalForm.querySelector('[type=submit]');error.textContent='';if(!title||!validInteger(target)||!goalForm.reportValidity()){error.textContent=t('goalInvalid');return;}const body=JSON.stringify({title,deadline:deadline||null}).slice(0,-1)+',"target_amount":'+BigInt(target).toString()+'}';goalBusy=true;setBusy(submit,true);try{await mutate(goalEditing?`/api/goals/${encodeURIComponent(goalEditing.id)}`:'/api/goals',goalEditing?'PUT':'POST',body);goalDialog.close();await refresh();}catch(err){if(!expire(err))error.textContent=message(err);}finally{goalBusy=false;setBusy(submit,false);}});
- transferForm.addEventListener('submit',async e=>{e.preventDefault();if(goalBusy)return;const value=transferForm.elements.amount.value.trim(),error=$('transfer-error'),submit=transferForm.querySelector('[type=submit]');error.textContent='';if(!validInteger(value)){error.textContent=t('invalidAmount');return;}goalBusy=true;setBusy(submit,true);try{await mutate(`/api/goals/${encodeURIComponent(transferGoal.id)}/${transferOperation}`,'POST','{"amount":'+BigInt(value).toString()+'}');transferDialog.close();await refresh();}catch(err){if(!expire(err))error.textContent=message(err);}finally{goalBusy=false;setBusy(submit,false);}});
+ transferForm.addEventListener('submit',async e=>{e.preventDefault();if(goalBusy)return;const value=transferForm.elements.amount.value.trim(),error=$('transfer-error'),submit=transferForm.querySelector('[type=submit]');error.textContent='';if(!validInteger(value)){error.textContent=t('invalidAmount');return;}goalBusy=true;setBusy(submit,true);try{await financialMutation(`/api/goals/${encodeURIComponent(transferGoal.id)}/${transferOperation}`,'{"amount":'+BigInt(value).toString()+'}');transferDialog.close();await refresh(true);}catch(err){if(!expire(err))error.textContent=err.status === undefined ? err.message : message(err);}finally{goalBusy=false;setBusy(submit,false);}});
  $('goal-add').addEventListener('click',()=>openGoal());$('goal-close').addEventListener('click',()=>goalDialog.close());$('transfer-close').addEventListener('click',()=>transferDialog.close());
  $('search-input').addEventListener('input',renderTransactions); $('period-select').addEventListener('change',renderPeriod);
  document.querySelectorAll('.nav-link').forEach(link=>link.addEventListener('click',()=>{ document.querySelectorAll('.nav-link').forEach(x=>x.classList.remove('active')); link.classList.add('active'); }));
@@ -169,7 +200,7 @@ if (page === 'dashboard') {
   if(!form.elements.date.value||!form.elements.date.checkValidity()){error.textContent=t('invalidDate');return;}
   const fields={type:form.elements.type.value,category:form.elements.category.value||null,description:form.elements.description.value||null,date:form.elements.date.value}; if(!form.reportValidity()) return;
   const body=JSON.stringify(fields).slice(0,-1)+',"amount":'+BigInt(amount).toString()+'}'; submitting=true; setBusy(submit,true);
-  try { await mutate(editing?`/api/transactions/${encodeURIComponent(editing.id)}`:'/api/transactions',editing?'PUT':'POST',body); dialog.close(); await refresh(); } catch(err){if(!expire(err)) error.textContent=message(err);} finally{submitting=false;setBusy(submit,false);}
+  try { if(editing) await mutate(`/api/transactions/${encodeURIComponent(editing.id)}`,'PUT',body); else await financialMutation('/api/transactions',body); dialog.close(); await refresh(true); } catch(err){if(!expire(err)) error.textContent=err.status === undefined ? err.message : message(err);} finally{submitting=false;setBusy(submit,false);}
  });
  $('logout').addEventListener('click',async e=>{setBusy(e.currentTarget,true);try{await mutate('/api/auth/logout','POST');csrf=null;items=[];location.assign('/login');}catch(err){if(!expire(err))status.textContent=message(err);}finally{setBusy(e.currentTarget,false);}});
  refresh();
